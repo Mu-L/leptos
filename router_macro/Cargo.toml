@@ -1,0 +1,26 @@
+[package]
+name = "leptos_router_macro"
+version = "0.7.4"
+authors = ["Greg Johnston", "Ben Wishovich"]
+license = "MIT"
+readme = "../README.md"
+repository = "https://github.com/leptos-rs/leptos"
+description = "Router utility macros for the Leptos web framework."
+rust-version.workspace = true
+edition.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-error2 = { version = "2.0", default-features = false }
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+
+[dev-dependencies]
+leptos_router = { path = "../router" }
+leptos_macro = { path = "../leptos_macro" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(leptos_debuginfo)'] }

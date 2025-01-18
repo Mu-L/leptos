@@ -28,15 +28,15 @@
 //!
 //! ### `#[server]`
 //!
-//! The [`#[server]`](https://docs.rs/server_fn/latest/server_fn/attr.server.html) macro allows you to annotate a function to
+//! The [`#[server]`](../leptos/attr.server.html) macro allows you to annotate a function to
 //! indicate that it should only run on the server (i.e., when you have an `ssr` feature in your
 //! crate that is enabled).
 //!
-//! **Important**: All server functions must be registered by calling [ServerFn::register_in]
-//! somewhere within your `main` function.
+//! **Important**: Before calling a server function on a non-web platform, you must set the server URL by calling
+//! [`set_server_url`](crate::client::set_server_url).
 //!
 //! ```rust,ignore
-//! #[server(ReadFromDB)]
+//! #[server]
 //! async fn read_posts(how_many: usize, query: String) -> Result<Vec<Posts>, ServerFnError> {
 //!   // do some server-only work here to access the database
 //!   let posts = ...;
@@ -48,18 +48,13 @@
 //! # async fn main() {
 //! async {
 //!   let posts = read_posts(3, "my search".to_string()).await;
-//!   log::debug!("posts = {posts{:#?}");
+//!   log::debug!("posts = {posts:#?}");
 //! }
 //! # }
-//!
-//! // make sure you've registered it somewhere in main
-//! fn main() {
-//!   _ = ReadFromDB::register();
-//! }
 //! ```
 //!
 //! If you call this function from the client, it will serialize the function arguments and `POST`
-//! them to the server as if they were the inputs in `<form method="POST">`.
+//! them to the server as if they were the URL-encoded inputs in `<form method="post">`.
 //!
 //! Here’s what you need to remember:
 //! - **Server functions must be `async`.** Even if the work being done inside the function body
@@ -67,366 +62,594 @@
 //!   function call.
 //! - **Server functions must return `Result<T, ServerFnError>`.** Even if the work being done
 //!   inside the function body can’t fail, the processes of serialization/deserialization and the
-//!   network call are fallible.
-//! - **Return types must implement [Serialize](serde::Serialize).**
-//!   This should be fairly obvious: we have to serialize arguments to send them to the server, and we
-//!   need to deserialize the result to return it to the client.
-//! - **Arguments must be implement [serde::Serialize].** They are serialized as an `application/x-www-form-urlencoded`
-//!   form data using [`serde_urlencoded`](https://docs.rs/serde_urlencoded/latest/serde_urlencoded/) or as `application/cbor`
-//!   using [`cbor`](https://docs.rs/cbor/latest/cbor/).
+//!   network call are fallible. [`ServerFnError`] can receive generic errors.
+//! - **Server functions are part of the public API of your application.** A server function is an
+//!   ad hoc HTTP API endpoint, not a magic formula. Any server function can be accessed by any HTTP
+//!   client. You should take care to sanitize any data being returned from the function to ensure it
+//!   does not leak data that should exist only on the server.
+//! - **Server functions can’t be generic.** Because each server function creates a separate API endpoint,
+//!   it is difficult to monomorphize. As a result, server functions cannot be generic (for now?) If you need to use
+//!   a generic function, you can define a generic inner function called by multiple concrete server functions.
+//! - **Arguments and return types must be serializable.** We support a variety of different encodings,
+//!   but one way or another arguments need to be serialized to be sent to the server and deserialized
+//!   on the server, and the return type must be serialized on the server and deserialized on the client.
+//!   This means that the set of valid server function argument and return types is a subset of all
+//!   possible Rust argument and return types. (i.e., server functions are strictly more limited than
+//!   ordinary functions.)
+//!
+//! ## Server Function Encodings
+//!
+//! Server functions are designed to allow a flexible combination of input and output encodings, the set
+//! of which can be found in the [`codec`] module.
+//!
+//! The serialization/deserialization process for server functions consists of a series of steps,
+//! each of which is represented by a different trait:
+//! 1. [`IntoReq`]: The client serializes the [`ServerFn`] argument type into an HTTP request.
+//! 2. The [`Client`] sends the request to the server.
+//! 3. [`FromReq`]: The server deserializes the HTTP request back into the [`ServerFn`] type.
+//! 4. The server calls calls [`ServerFn::run_body`] on the data.
+//! 5. [`IntoRes`]: The server serializes the [`ServerFn::Output`] type into an HTTP response.
+//! 6. The server integration applies any middleware from [`ServerFn::middlewares`] and responds to the request.
+//! 7. [`FromRes`]: The client deserializes the response back into the [`ServerFn::Output`] type.
+//!
+//! [server]: ../leptos/attr.server.html
+//! [`serde_qs`]: <https://docs.rs/serde_qs/latest/serde_qs/>
+//! [`cbor`]: <https://docs.rs/cbor/latest/cbor/>
 
-// used by the macro
+/// Implementations of the client side of the server function call.
+pub mod client;
+
+/// Encodings for arguments and results.
+pub mod codec;
+
+#[macro_use]
+/// Error types and utilities.
+pub mod error;
+/// Types to add server middleware to a server function.
+pub mod middleware;
+/// Utilities to allow client-side redirects.
+pub mod redirect;
+/// Types and traits for  for HTTP requests.
+pub mod request;
+/// Types and traits for HTTP responses.
+pub mod response;
+
+#[cfg(feature = "actix")]
+#[doc(hidden)]
+pub use ::actix_web as actix_export;
+#[cfg(feature = "axum-no-default")]
+#[doc(hidden)]
+pub use ::axum as axum_export;
+#[cfg(feature = "generic")]
+#[doc(hidden)]
+pub use ::bytes as bytes_export;
+#[cfg(feature = "generic")]
+#[doc(hidden)]
+pub use ::http as http_export;
+use client::Client;
+use codec::{Encoding, FromReq, FromRes, IntoReq, IntoRes};
 #[doc(hidden)]
 pub use const_format;
-use proc_macro2::TokenStream;
-use quote::TokenStreamExt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-pub use server_fn_macro_default::server;
-#[cfg(any(feature = "ssr", doc))]
-use std::sync::Arc;
-use std::{future::Future, pin::Pin, str::FromStr};
-use syn::parse_quote;
-use thiserror::Error;
-// used by the macro
+use dashmap::DashMap;
+pub use error::ServerFnError;
+use error::ServerFnErrorSerde;
+#[cfg(feature = "form-redirects")]
+use error::ServerFnUrlError;
+use http::Method;
+use middleware::{Layer, Service};
+use once_cell::sync::Lazy;
+use redirect::RedirectHook;
+use request::Req;
+use response::{ClientRes, Res};
+#[cfg(feature = "rkyv")]
+pub use rkyv;
+#[doc(hidden)]
+pub use serde;
+#[doc(hidden)]
+#[cfg(feature = "serde-lite")]
+pub use serde_lite;
+use std::{fmt::Display, future::Future, pin::Pin, str::FromStr, sync::Arc};
 #[doc(hidden)]
 pub use xxhash_rust;
 
-#[cfg(any(feature = "ssr", doc))]
-/// Something that can register a server function.
-pub trait ServerFunctionRegistry<T> {
-    /// An error that can occur when registering a server function.
-    type Error: std::error::Error;
-    /// Registers a server function at the given URL.
-    fn register(
-        url: &'static str,
-        server_function: Arc<ServerFnTraitObj<T>>,
-    ) -> Result<(), Self::Error>;
-    /// Returns the server function registered at the given URL, or `None` if no function is registered at that URL.
-    fn get(url: &str) -> Option<Arc<ServerFnTraitObj<T>>>;
-    /// Returns a list of all registered server functions.
-    fn paths_registered() -> Vec<&'static str>;
-}
-
-/// A server function that can be called from the client.
-pub type ServerFnTraitObj<T> = dyn Fn(
-        T,
-        &[u8],
-    ) -> Pin<Box<dyn Future<Output = Result<Payload, ServerFnError>>>>
-    + Send
-    + Sync;
-
-/// A dual type to hold the possible Response datatypes
-#[derive(Debug)]
-pub enum Payload {
-    ///Encodes Data using CBOR
-    Binary(Vec<u8>),
-    ///Encodes data in the URL
-    Url(String),
-    ///Encodes Data using Json
-    Json(String),
-}
-
-/// Attempts to find a server function registered at the given path.
+/// Defines a function that runs only on the server, but can be called from the server or the client.
 ///
-/// This can be used by a server to handle the requests, as in the following example (using `actix-web`)
+/// The type for which `ServerFn` is implemented is actually the type of the arguments to the function,
+/// while the function body itself is implemented in [`run_body`](ServerFn::run_body).
 ///
-/// ```rust, ignore
-/// #[post("{tail:.*}")]
-/// async fn handle_server_fns(
-///     req: HttpRequest,
-///     params: web::Path<String>,
-///     body: web::Bytes,
-/// ) -> impl Responder {
-///     let path = params.into_inner();
-///     let accept_header = req
-///         .headers()
-///         .get("Accept")
-///         .and_then(|value| value.to_str().ok());
-///
-///     if let Some(server_fn) = server_fn_by_path::<MyRegistry>(path.as_str()) {
-///         let body: &[u8] = &body;
-///         match server_fn(&body).await {
-///             Ok(serialized) => {
-///                 // if this is Accept: application/json then send a serialized JSON response
-///                 if let Some("application/json") = accept_header {
-///                     HttpResponse::Ok().body(serialized)
-///                 }
-///                 // otherwise, it's probably a <form> submit or something: redirect back to the referrer
-///                 else {
-///                     HttpResponse::SeeOther()
-///                         .insert_header(("Location", "/"))
-///                         .content_type("application/json")
-///                         .body(serialized)
-///                 }
-///             }
-///             Err(e) => {
-///                 eprintln!("server function error: {e:#?}");
-///                 HttpResponse::InternalServerError().body(e.to_string())
-///             }
-///         }
-///     } else {
-///         HttpResponse::BadRequest().body(format!("Could not find a server function at that route."))
-///     }
+/// This means that `Self` here is usually a struct, in which each field is an argument to the function.
+/// In other words,
+/// ```rust,ignore
+/// #[server]
+/// pub async fn my_function(foo: String, bar: usize) -> Result<usize, ServerFnError> {
+///     Ok(foo.len() + bar)
 /// }
 /// ```
-#[cfg(any(feature = "ssr", doc))]
-pub fn server_fn_by_path<T: 'static, R: ServerFunctionRegistry<T>>(
-    path: &str,
-) -> Option<Arc<ServerFnTraitObj<T>>> {
-    R::get(path)
-}
-
-/// Returns the set of currently-registered server function paths, for debugging purposes.
-#[cfg(any(feature = "ssr", doc))]
-pub fn server_fns_by_path<T: 'static, R: ServerFunctionRegistry<T>>(
-) -> Vec<&'static str> {
-    R::paths_registered()
-}
-
-/// Holds the current options for encoding types.
-/// More could be added, but they need to be serde
-#[derive(Debug, PartialEq)]
-pub enum Encoding {
-    /// A Binary Encoding Scheme Called Cbor
-    Cbor,
-    /// The Default URL-encoded encoding method
-    Url,
-}
-
-impl FromStr for Encoding {
-    type Err = ();
-
-    fn from_str(input: &str) -> Result<Encoding, Self::Err> {
-        match input {
-            "URL" => Ok(Encoding::Url),
-            "Cbor" => Ok(Encoding::Cbor),
-            _ => Err(()),
-        }
-    }
-}
-
-impl quote::ToTokens for Encoding {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        let option: syn::Ident = match *self {
-            Encoding::Cbor => parse_quote!(Cbor),
-            Encoding::Url => parse_quote!(Url),
-        };
-        let expansion: syn::Ident = syn::parse_quote! {
-          Encoding::#option
-        };
-        tokens.append(expansion);
-    }
-}
-
-/// Defines a "server function." A server function can be called from the server or the client,
-/// but the body of its code will only be run on the server, i.e., if a crate feature `ssr` (server-side-rendering) is enabled.
+/// should expand to
+/// ```rust,ignore
+/// #[derive(Serialize, Deserialize)]
+/// pub struct MyFunction {
+///     foo: String,
+///     bar: usize
+/// }
 ///
-/// Server functions are created using the `server` macro.
+/// impl ServerFn for MyFunction {
+///     async fn run_body() -> Result<usize, ServerFnError> {
+///         Ok(foo.len() + bar)
+///     }
 ///
-/// The function should be registered by calling `ServerFn::register()`. The set of server functions
-/// can be queried on the server for routing purposes by calling [server_fn_by_path].
-///
-/// Technically, the trait is implemented on a type that describes the server function's arguments.
-pub trait ServerFn<T: 'static>
+///     // etc.
+/// }
+/// ```
+pub trait ServerFn
 where
-    Self: Serialize + DeserializeOwned + Sized + 'static,
+    Self: Send
+        + FromReq<Self::InputEncoding, Self::ServerRequest, Self::Error>
+        + IntoReq<
+            Self::InputEncoding,
+            <Self::Client as Client<Self::Error>>::Request,
+            Self::Error,
+        >,
 {
-    /// The return type of the function.
-    type Output: Serialize;
+    /// A unique path for the server function’s API endpoint, relative to the host, including its prefix.
+    const PATH: &'static str;
 
-    /// URL prefix that should be prepended by the client to the generated URL.
-    fn prefix() -> &'static str;
+    /// The type of the HTTP client that will send the request from the client side.
+    ///
+    /// For example, this might be `gloo-net` in the browser, or `reqwest` for a desktop app.
+    type Client: Client<Self::Error>;
 
-    /// The path at which the server function can be reached on the server.
-    fn url() -> &'static str;
+    /// The type of the HTTP request when received by the server function on the server side.
+    type ServerRequest: Req<Self::Error> + Send;
 
-    /// The path at which the server function can be reached on the server.
-    fn encoding() -> Encoding;
+    /// The type of the HTTP response returned by the server function on the server side.
+    type ServerResponse: Res<Self::Error> + Send;
 
-    /// Runs the function on the server.
-    #[cfg(any(feature = "ssr", doc))]
-    fn call_fn(
-        self,
-        cx: T,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Output, ServerFnError>>>>;
+    /// The return type of the server function.
+    ///
+    /// This needs to be converted into `ServerResponse` on the server side, and converted
+    /// *from* `ClientResponse` when received by the client.
+    type Output: IntoRes<Self::OutputEncoding, Self::ServerResponse, Self::Error>
+        + FromRes<
+            Self::OutputEncoding,
+            <Self::Client as Client<Self::Error>>::Response,
+            Self::Error,
+        > + Send;
 
-    /// Runs the function on the client by sending an HTTP request to the server.
-    #[cfg(any(not(feature = "ssr"), doc))]
-    fn call_fn_client(
-        self,
-        cx: T,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Output, ServerFnError>>>>;
+    /// The [`Encoding`] used in the request for arguments into the server function.
+    type InputEncoding: Encoding;
 
-    /// Registers the server function, allowing the server to query it by URL.
-    #[cfg(any(feature = "ssr", doc))]
-    fn register_in<R: ServerFunctionRegistry<T>>() -> Result<(), ServerFnError>
-    {
-        // create the handler for this server function
-        // takes a String -> returns its async value
+    /// The [`Encoding`] used in the response for the result of the server function.
+    type OutputEncoding: Encoding;
 
-        let run_server_fn = Arc::new(|cx: T, data: &[u8]| {
-            // decode the args
-            let value = match Self::encoding() {
-                Encoding::Url => serde_urlencoded::from_bytes(data)
-                    .map_err(|e| ServerFnError::Deserialization(e.to_string())),
-                Encoding::Cbor => ciborium::de::from_reader(data)
-                    .map_err(|e| ServerFnError::Deserialization(e.to_string())),
-            };
-            Box::pin(async move {
-                let value: Self = match value {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
+    /// The type of the custom error on [`ServerFnError`], if any. (If there is no
+    /// custom error type, this can be `NoCustomError` by default.)
+    type Error: FromStr + Display;
 
-                // call the function
-                let result = match value.call_fn(cx).await {
-                    Ok(r) => r,
-                    Err(e) => return Err(e),
-                };
-
-                // serialize the output
-                let result = match Self::encoding() {
-                    Encoding::Url => match serde_json::to_string(&result)
-                        .map_err(|e| {
-                            ServerFnError::Serialization(e.to_string())
-                        }) {
-                        Ok(r) => Payload::Url(r),
-                        Err(e) => return Err(e),
-                    },
-                    Encoding::Cbor => {
-                        let mut buffer: Vec<u8> = Vec::new();
-                        match ciborium::ser::into_writer(&result, &mut buffer)
-                            .map_err(|e| {
-                                ServerFnError::Serialization(e.to_string())
-                            }) {
-                            Ok(_) => Payload::Binary(buffer),
-                            Err(e) => return Err(e),
-                        }
-                    }
-                };
-
-                Ok(result)
-            })
-                as Pin<Box<dyn Future<Output = Result<Payload, ServerFnError>>>>
-        });
-
-        // store it in the hashmap
-        R::register(Self::url(), run_server_fn)
-            .map_err(|e| ServerFnError::Registration(e.to_string()))
+    /// Returns [`Self::PATH`].
+    fn url() -> &'static str {
+        Self::PATH
     }
-}
 
-/// Type for errors that can occur when using server functions.
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
-pub enum ServerFnError {
-    /// Error while trying to register the server function (only occurs in case of poisoned RwLock).
-    #[error("error while trying to register the server function: {0}")]
-    Registration(String),
-    /// Occurs on the client if there is a network error while trying to run function on server.
-    #[error("error reaching server to call server function: {0}")]
-    Request(String),
-    /// Occurs when there is an error while actually running the function on the server.
-    #[error("error running server function: {0}")]
-    ServerError(String),
-    /// Occurs on the client if there is an error deserializing the server's response.
-    #[error("error deserializing server function results {0}")]
-    Deserialization(String),
-    /// Occurs on the client if there is an error serializing the server function arguments.
-    #[error("error serializing server function results {0}")]
-    Serialization(String),
-    /// Occurs on the server if there is an error deserializing one of the arguments that's been sent.
-    #[error("error deserializing server function arguments {0}")]
-    Args(String),
-    /// Occurs on the server if there's a missing argument.
-    #[error("missing argument {0}")]
-    MissingArg(String),
-}
-
-/// Executes the HTTP call to call a server function from the client, given its URL and argument type.
-#[cfg(not(feature = "ssr"))]
-pub async fn call_server_fn<T, C: 'static>(
-    url: &str,
-    args: impl ServerFn<C>,
-    enc: Encoding,
-) -> Result<T, ServerFnError>
-where
-    T: serde::Serialize + serde::de::DeserializeOwned + Sized,
-{
-    use ciborium::ser::into_writer;
-    use js_sys::Uint8Array;
-    use serde_json::Deserializer as JSONDeserializer;
-
-    #[derive(Debug)]
-    enum Payload {
-        Binary(Vec<u8>),
-        Url(String),
+    /// Middleware that should be applied to this server function.
+    fn middlewares(
+    ) -> Vec<Arc<dyn Layer<Self::ServerRequest, Self::ServerResponse>>> {
+        Vec::new()
     }
-    let args_encoded = match &enc {
-        Encoding::Url => Payload::Url(
-            serde_urlencoded::to_string(&args)
-                .map_err(|e| ServerFnError::Serialization(e.to_string()))?,
-        ),
-        Encoding::Cbor => {
-            let mut buffer: Vec<u8> = Vec::new();
-            into_writer(&args, &mut buffer)
-                .map_err(|e| ServerFnError::Serialization(e.to_string()))?;
-            Payload::Binary(buffer)
-        }
-    };
 
-    let content_type_header = match &enc {
-        Encoding::Url => "application/x-www-form-urlencoded",
-        Encoding::Cbor => "application/cbor",
-    };
+    /// The body of the server function. This will only run on the server.
+    fn run_body(
+        self,
+    ) -> impl Future<Output = Result<Self::Output, ServerFnError<Self::Error>>> + Send;
 
-    let accept_header = match &enc {
-        Encoding::Url => "application/x-www-form-urlencoded",
-        Encoding::Cbor => "application/cbor",
-    };
+    #[doc(hidden)]
+    fn run_on_server(
+        req: Self::ServerRequest,
+    ) -> impl Future<Output = Self::ServerResponse> + Send {
+        // Server functions can either be called by a real Client,
+        // or directly by an HTML <form>. If they're accessed by a <form>, default to
+        // redirecting back to the Referer.
+        #[cfg(feature = "form-redirects")]
+        let accepts_html = req
+            .accepts()
+            .map(|n| n.contains("text/html"))
+            .unwrap_or(false);
+        #[cfg(feature = "form-redirects")]
+        let mut referer = req.referer().as_deref().map(ToOwned::to_owned);
 
-    let resp = match args_encoded {
-        Payload::Binary(b) => {
-            let slice_ref: &[u8] = &b;
-            let js_array = Uint8Array::from(slice_ref).buffer();
-            gloo_net::http::Request::post(url)
-                .header("Content-Type", content_type_header)
-                .header("Accept", accept_header)
-                .body(js_array)
-                .send()
+        async move {
+            #[allow(unused_variables, unused_mut)]
+            // used in form redirects feature
+            let (mut res, err) = Self::execute_on_server(req)
                 .await
-                .map_err(|e| ServerFnError::Request(e.to_string()))?
-        }
-        Payload::Url(s) => gloo_net::http::Request::post(url)
-            .header("Content-Type", content_type_header)
-            .header("Accept", accept_header)
-            .body(s)
-            .send()
-            .await
-            .map_err(|e| ServerFnError::Request(e.to_string()))?,
-    };
+                .map(|res| (res, None))
+                .unwrap_or_else(|e| {
+                    (
+                        Self::ServerResponse::error_response(Self::PATH, &e),
+                        Some(e),
+                    )
+                });
 
-    // check for error status
-    let status = resp.status();
-    if (500..=599).contains(&status) {
-        return Err(ServerFnError::ServerError(resp.status_text()));
+            // if it accepts HTML, we'll redirect to the Referer
+            #[cfg(feature = "form-redirects")]
+            if accepts_html {
+                // if it had an error, encode that error in the URL
+                if let Some(err) = err {
+                    if let Ok(url) = ServerFnUrlError::new(Self::PATH, err)
+                        .to_url(referer.as_deref().unwrap_or("/"))
+                    {
+                        referer = Some(url.to_string());
+                    }
+                }
+                // otherwise, strip error info from referer URL, as that means it's from a previous
+                // call
+                else if let Some(referer) = referer.as_mut() {
+                    ServerFnUrlError::<Self::Error>::strip_error_info(referer)
+                }
+
+                // set the status code and Location header
+                res.redirect(referer.as_deref().unwrap_or("/"));
+            }
+
+            res
+        }
     }
 
-    if enc == Encoding::Cbor {
-        let binary = resp
-            .binary()
-            .await
-            .map_err(|e| ServerFnError::Deserialization(e.to_string()))?;
+    #[doc(hidden)]
+    fn run_on_client(
+        self,
+    ) -> impl Future<Output = Result<Self::Output, ServerFnError<Self::Error>>> + Send
+    {
+        async move {
+            // create and send request on client
+            let req =
+                self.into_req(Self::PATH, Self::OutputEncoding::CONTENT_TYPE)?;
+            Self::run_on_client_with_req(req, redirect::REDIRECT_HOOK.get())
+                .await
+        }
+    }
 
-        ciborium::de::from_reader(binary.as_slice())
-            .map_err(|e| ServerFnError::Deserialization(e.to_string()))
-    } else {
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ServerFnError::Deserialization(e.to_string()))?;
+    #[doc(hidden)]
+    fn run_on_client_with_req(
+        req: <Self::Client as Client<Self::Error>>::Request,
+        redirect_hook: Option<&RedirectHook>,
+    ) -> impl Future<Output = Result<Self::Output, ServerFnError<Self::Error>>> + Send
+    {
+        async move {
+            let res = Self::Client::send(req).await?;
 
-        let mut deserializer = JSONDeserializer::from_str(&text);
-        T::deserialize(&mut deserializer)
-            .map_err(|e| ServerFnError::Deserialization(e.to_string()))
+            let status = res.status();
+            let location = res.location();
+            let has_redirect_header = res.has_redirect();
+
+            // if it returns an error status, deserialize the error using FromStr
+            let res = if (400..=599).contains(&status) {
+                let text = res.try_into_string().await?;
+                Err(ServerFnError::<Self::Error>::de(&text))
+            } else {
+                // otherwise, deserialize the body as is
+                Ok(Self::Output::from_res(res).await)
+            }?;
+
+            // if redirected, call the redirect hook (if that's been set)
+            if let Some(redirect_hook) = redirect_hook {
+                if (300..=399).contains(&status) || has_redirect_header {
+                    redirect_hook(&location);
+                }
+            }
+            res
+        }
+    }
+
+    /// Runs the server function (on the server), bubbling up an `Err(_)` after any stage.
+    #[doc(hidden)]
+    fn execute_on_server(
+        req: Self::ServerRequest,
+    ) -> impl Future<
+        Output = Result<Self::ServerResponse, ServerFnError<Self::Error>>,
+    > + Send {
+        async {
+            let this = Self::from_req(req).await?;
+            let output = this.run_body().await?;
+            let res = output.into_res().await?;
+            Ok(res)
+        }
+    }
+}
+
+#[cfg(feature = "ssr")]
+#[doc(hidden)]
+pub use inventory;
+
+/// Uses the `inventory` crate to initialize a map between paths and server functions.
+#[macro_export]
+macro_rules! initialize_server_fn_map {
+    ($req:ty, $res:ty) => {
+        once_cell::sync::Lazy::new(|| {
+            $crate::inventory::iter::<ServerFnTraitObj<$req, $res>>
+                .into_iter()
+                .map(|obj| {
+                    ((obj.path().to_string(), obj.method()), obj.clone())
+                })
+                .collect()
+        })
+    };
+}
+
+/// A list of middlewares that can be applied to a server function.
+pub type MiddlewareSet<Req, Res> = Vec<Arc<dyn Layer<Req, Res>>>;
+
+/// A trait object that allows multiple server functions that take the same
+/// request type and return the same response type to be gathered into a single
+/// collection.
+pub struct ServerFnTraitObj<Req, Res> {
+    path: &'static str,
+    method: Method,
+    handler: fn(Req) -> Pin<Box<dyn Future<Output = Res> + Send>>,
+    middleware: fn() -> MiddlewareSet<Req, Res>,
+}
+
+impl<Req, Res> ServerFnTraitObj<Req, Res> {
+    /// Converts the relevant parts of a server function into a trait object.
+    pub const fn new(
+        path: &'static str,
+        method: Method,
+        handler: fn(Req) -> Pin<Box<dyn Future<Output = Res> + Send>>,
+        middleware: fn() -> MiddlewareSet<Req, Res>,
+    ) -> Self {
+        Self {
+            path,
+            method,
+            handler,
+            middleware,
+        }
+    }
+
+    /// The path of the server function.
+    pub fn path(&self) -> &'static str {
+        self.path
+    }
+
+    /// The HTTP method the server function expects.
+    pub fn method(&self) -> Method {
+        self.method.clone()
+    }
+
+    /// The handler for this server function.
+    pub fn handler(&self, req: Req) -> impl Future<Output = Res> + Send {
+        (self.handler)(req)
+    }
+
+    /// The set of middleware that should be applied to this function.
+    pub fn middleware(&self) -> MiddlewareSet<Req, Res> {
+        (self.middleware)()
+    }
+}
+
+impl<Req, Res> Service<Req, Res> for ServerFnTraitObj<Req, Res>
+where
+    Req: Send + 'static,
+    Res: 'static,
+{
+    fn run(&mut self, req: Req) -> Pin<Box<dyn Future<Output = Res> + Send>> {
+        let handler = self.handler;
+        Box::pin(async move { handler(req).await })
+    }
+}
+
+impl<Req, Res> Clone for ServerFnTraitObj<Req, Res> {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path,
+            method: self.method.clone(),
+            handler: self.handler,
+            middleware: self.middleware,
+        }
+    }
+}
+
+#[allow(unused)] // used by server integrations
+type LazyServerFnMap<Req, Res> =
+    Lazy<DashMap<(String, Method), ServerFnTraitObj<Req, Res>>>;
+
+#[cfg(feature = "ssr")]
+impl<Req: 'static, Res: 'static> inventory::Collect
+    for ServerFnTraitObj<Req, Res>
+{
+    #[inline]
+    fn registry() -> &'static inventory::Registry {
+        static REGISTRY: inventory::Registry = inventory::Registry::new();
+        &REGISTRY
+    }
+}
+
+/// Axum integration.
+#[cfg(feature = "axum-no-default")]
+pub mod axum {
+    use crate::{
+        middleware::{BoxedService, Service},
+        Encoding, LazyServerFnMap, ServerFn, ServerFnTraitObj,
+    };
+    use axum::body::Body;
+    use http::{Method, Request, Response, StatusCode};
+
+    static REGISTERED_SERVER_FUNCTIONS: LazyServerFnMap<
+        Request<Body>,
+        Response<Body>,
+    > = initialize_server_fn_map!(Request<Body>, Response<Body>);
+
+    /// Explicitly register a server function. This is only necessary if you are
+    /// running the server in a WASM environment (or a rare environment that the
+    /// `inventory` crate won't work in.).
+    pub fn register_explicit<T>()
+    where
+        T: ServerFn<
+                ServerRequest = Request<Body>,
+                ServerResponse = Response<Body>,
+            > + 'static,
+    {
+        REGISTERED_SERVER_FUNCTIONS.insert(
+            (T::PATH.into(), T::InputEncoding::METHOD),
+            ServerFnTraitObj::new(
+                T::PATH,
+                T::InputEncoding::METHOD,
+                |req| Box::pin(T::run_on_server(req)),
+                T::middlewares,
+            ),
+        );
+    }
+
+    /// The set of all registered server function paths.
+    pub fn server_fn_paths() -> impl Iterator<Item = (&'static str, Method)> {
+        REGISTERED_SERVER_FUNCTIONS
+            .iter()
+            .map(|item| (item.path(), item.method()))
+    }
+
+    /// An Axum handler that responds to a server function request.
+    pub async fn handle_server_fn(req: Request<Body>) -> Response<Body> {
+        let path = req.uri().path();
+
+        if let Some(mut service) =
+            get_server_fn_service(path, req.method().clone())
+        {
+            service.run(req).await
+        } else {
+            Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from(format!(
+                    "Could not find a server function at the route {path}. \
+                     \n\nIt's likely that either\n 1. The API prefix you \
+                     specify in the `#[server]` macro doesn't match the \
+                     prefix at which your server function handler is mounted, \
+                     or \n2. You are on a platform that doesn't support \
+                     automatic server function registration and you need to \
+                     call ServerFn::register_explicit() on the server \
+                     function type, somewhere in your `main` function.",
+                )))
+                .unwrap()
+        }
+    }
+
+    /// Returns the server function at the given path as a service that can be modified.
+    pub fn get_server_fn_service(
+        path: &str,
+        method: Method,
+    ) -> Option<BoxedService<Request<Body>, Response<Body>>> {
+        let key = (path.into(), method);
+        REGISTERED_SERVER_FUNCTIONS.get(&key).map(|server_fn| {
+            let middleware = (server_fn.middleware)();
+            let mut service = BoxedService::new(server_fn.clone());
+            for middleware in middleware {
+                service = middleware.layer(service);
+            }
+            service
+        })
+    }
+}
+
+/// Actix integration.
+#[cfg(feature = "actix")]
+pub mod actix {
+    use crate::{
+        middleware::BoxedService, request::actix::ActixRequest,
+        response::actix::ActixResponse, Encoding, LazyServerFnMap, ServerFn,
+        ServerFnTraitObj,
+    };
+    use actix_web::{web::Payload, HttpRequest, HttpResponse};
+    use http::Method;
+    #[doc(hidden)]
+    pub use send_wrapper::SendWrapper;
+
+    static REGISTERED_SERVER_FUNCTIONS: LazyServerFnMap<
+        ActixRequest,
+        ActixResponse,
+    > = initialize_server_fn_map!(ActixRequest, ActixResponse);
+
+    /// Explicitly register a server function. This is only necessary if you are
+    /// running the server in a WASM environment (or a rare environment that the
+    /// `inventory` crate won't work in.).
+    pub fn register_explicit<T>()
+    where
+        T: ServerFn<
+                ServerRequest = ActixRequest,
+                ServerResponse = ActixResponse,
+            > + 'static,
+    {
+        REGISTERED_SERVER_FUNCTIONS.insert(
+            (T::PATH.into(), T::InputEncoding::METHOD),
+            ServerFnTraitObj::new(
+                T::PATH,
+                T::InputEncoding::METHOD,
+                |req| Box::pin(T::run_on_server(req)),
+                T::middlewares,
+            ),
+        );
+    }
+
+    /// The set of all registered server function paths.
+    pub fn server_fn_paths() -> impl Iterator<Item = (&'static str, Method)> {
+        REGISTERED_SERVER_FUNCTIONS
+            .iter()
+            .map(|item| (item.path(), item.method()))
+    }
+
+    /// An Actix handler that responds to a server function request.
+    pub async fn handle_server_fn(
+        req: HttpRequest,
+        payload: Payload,
+    ) -> HttpResponse {
+        let path = req.uri().path();
+        let method = req.method();
+        if let Some(mut service) = get_server_fn_service(path, method) {
+            service
+                .0
+                .run(ActixRequest::from((req, payload)))
+                .await
+                .0
+                .take()
+        } else {
+            HttpResponse::BadRequest().body(format!(
+                "Could not find a server function at the route {path}. \
+                 \n\nIt's likely that either\n 1. The API prefix you specify \
+                 in the `#[server]` macro doesn't match the prefix at which \
+                 your server function handler is mounted, or \n2. You are on \
+                 a platform that doesn't support automatic server function \
+                 registration and you need to call \
+                 ServerFn::register_explicit() on the server function type, \
+                 somewhere in your `main` function.",
+            ))
+        }
+    }
+
+    /// Returns the server function at the given path as a service that can be modified.
+    pub fn get_server_fn_service(
+        path: &str,
+        method: &actix_web::http::Method,
+    ) -> Option<BoxedService<ActixRequest, ActixResponse>> {
+        use actix_web::http::Method as ActixMethod;
+
+        let method = match *method {
+            ActixMethod::GET => Method::GET,
+            ActixMethod::POST => Method::POST,
+            ActixMethod::PUT => Method::PUT,
+            ActixMethod::PATCH => Method::PATCH,
+            ActixMethod::DELETE => Method::DELETE,
+            ActixMethod::HEAD => Method::HEAD,
+            ActixMethod::TRACE => Method::TRACE,
+            ActixMethod::OPTIONS => Method::OPTIONS,
+            ActixMethod::CONNECT => Method::CONNECT,
+            _ => unreachable!(),
+        };
+        REGISTERED_SERVER_FUNCTIONS.get(&(path.into(), method)).map(
+            |server_fn| {
+                let middleware = (server_fn.middleware)();
+                let mut service = BoxedService::new(server_fn.clone());
+                for middleware in middleware {
+                    service = middleware.layer(service);
+                }
+                service
+            },
+        )
     }
 }

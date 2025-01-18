@@ -1,17 +1,20 @@
-use crate::use_head;
-use leptos::*;
+use crate::{register, OrDefaultNonce};
+use leptos::{
+    component, oco::Oco, prelude::*, tachys::html::element::style, IntoView,
+};
 
-/// Injects an [HTMLStyleElement](https://developer.mozilla.org/en-US/docs/Web/API/HTMLStyleElement) into the document
+/// Injects an [`HTMLStyleElement`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLStyleElement) into the document
 /// head, accepting any of the valid attributes for that tag.
+///
 /// ```
-/// use leptos::*;
+/// use leptos::prelude::*;
 /// use leptos_meta::*;
 ///
 /// #[component]
-/// fn MyApp(cx: Scope) -> impl IntoView {
-///     provide_meta_context(cx);
+/// fn MyApp() -> impl IntoView {
+///     provide_meta_context();
 ///
-///     view! { cx,
+///     view! {
 ///       <main>
 ///         <Style>
 ///           "body { font-weight: bold; }"
@@ -20,53 +23,34 @@ use leptos::*;
 ///     }
 /// }
 /// ```
-#[component(transparent)]
+#[component]
 pub fn Style(
-    cx: Scope,
     /// An ID for the `<script>` tag.
     #[prop(optional, into)]
-    id: Option<String>,
+    id: Option<Oco<'static, str>>,
     /// The [`media`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/style#attr-media) attribute.
     #[prop(optional, into)]
-    media: Option<String>,
+    media: Option<Oco<'static, str>>,
     /// The [`nonce`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/style#attr-nonce) attribute.
     #[prop(optional, into)]
-    nonce: Option<String>,
+    nonce: Option<Oco<'static, str>>,
     /// The [`title`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/style#attr-title) attribute.
     #[prop(optional, into)]
-    title: Option<String>,
+    title: Option<Oco<'static, str>>,
     /// The [`blocking`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/style#attr-blocking) attribute.
     #[prop(optional, into)]
-    blocking: Option<String>,
+    blocking: Option<Oco<'static, str>>,
     /// The content of the `<style>` tag.
     #[prop(optional)]
-    children: Option<Box<dyn FnOnce(Scope) -> Fragment>>,
+    children: Option<Children>,
 ) -> impl IntoView {
-    let meta = use_head(cx);
-    let next_id = meta.tags.get_next_id();
-    let id = id.unwrap_or_else(|| format!("leptos-link-{}", next_id.0));
-
-    let builder_el = leptos::leptos_dom::html::style(cx)
-        .attr("id", &id)
-        .attr("media", media)
-        .attr("nonce", nonce)
-        .attr("title", title)
-        .attr("blocking", blocking);
-    let builder_el = if let Some(children) = children {
-        let frag = children(cx);
-        let mut style = String::new();
-        for node in frag.nodes {
-            match node {
-                View::Text(text) => style.push_str(&text.content),
-                _ => leptos::warn!(
-                    "Only text nodes are supported as children of <Style/>."
-                ),
-            }
-        }
-        builder_el.child(style)
-    } else {
-        builder_el
-    };
-
-    meta.tags.register(cx, id, builder_el.into_any());
+    register(
+        style()
+            .id(id)
+            .media(media)
+            .nonce(nonce.or_default_nonce())
+            .title(title)
+            .blocking(blocking)
+            .child(children.map(|c| c())),
+    )
 }

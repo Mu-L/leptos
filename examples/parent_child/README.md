@@ -9,9 +9,10 @@ This example highlights four different ways that child components can communicat
 3. `<ButtonC/>`: adding a simple event listener on the child component itself
 4. `<ButtonD/>`: providing a context that is used in the component (rather than prop drilling)
 
-## Client Side Rendering
+## Getting Started
 
-To run it as a Client Side App, you can issue `trunk serve --open` in the root. This will build the entire
-app into one CSR bundle
+See the [Examples README](../README.md) for setup and run instructions.
 
-> If you don't have `trunk` installed, [click here for install instructions.](https://trunkrs.dev/)
+## Quick Start
+
+Run `trunk serve --open` to run this example.

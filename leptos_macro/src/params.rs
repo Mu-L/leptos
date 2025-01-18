@@ -1,7 +1,7 @@
 use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 
-pub fn impl_params(ast: &syn::DeriveInput) -> proc_macro::TokenStream {
+pub fn params_impl(ast: &syn::DeriveInput) -> proc_macro::TokenStream {
     let name = &ast.ident;
 
     let fields = if let syn::Data::Struct(syn::DataStruct {
@@ -19,7 +19,10 @@ pub fn impl_params(ast: &syn::DeriveInput) -> proc_macro::TokenStream {
 				let span = field.span();
 
 				quote_spanned! {
-					span => #ident: <#ty>::into_param(map.get(#field_name_string).map(|n| n.as_str()), #field_name_string)?
+					span=> #ident: <#ty as ::leptos_router::params::IntoParam>::into_param(
+                        map.get_str(#field_name_string),
+                        #field_name_string
+                    )?
 				}
 			})
             .collect()
@@ -29,7 +32,7 @@ pub fn impl_params(ast: &syn::DeriveInput) -> proc_macro::TokenStream {
 
     let gen = quote! {
         impl Params for #name {
-            fn from_map(map: &::leptos_router::ParamsMap) -> Result<Self, ::leptos_router::ParamsError> {
+            fn from_map(map: &::leptos_router::params::ParamsMap) -> ::core::result::Result<Self, ::leptos_router::params::ParamsError> {
                 Ok(Self {
                     #(#fields,)*
                 })

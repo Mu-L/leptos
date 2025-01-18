@@ -1,330 +1,229 @@
-use crate::{ServerFn, ServerFnError};
-use leptos_reactive::{
-    create_rw_signal, signal_prelude::*, spawn_local, store_value, ReadSignal,
-    RwSignal, Scope, StoredValue,
+use reactive_graph::{
+    actions::{Action, ArcAction},
+    owner::use_context,
+    traits::DefinedAt,
 };
-use std::{future::Future, pin::Pin, rc::Rc};
+use server_fn::{error::ServerFnErrorSerde, ServerFn, ServerFnError};
+use std::{ops::Deref, panic::Location, sync::Arc};
 
-/// An action synchronizes an imperative `async` call to the synchronous reactive system.
+/// An error that can be caused by a server action.
 ///
-/// If you’re trying to load data by running an `async` function reactively, you probably
-/// want to use a [Resource](leptos_reactive::Resource) instead. If you’re trying to occasionally
-/// run an `async` function in response to something like a user clicking a button, you're in the right place.
-///
-/// ```rust
-/// # use leptos::*;
-/// # run_scope(create_runtime(), |cx| {
-/// async fn send_new_todo_to_api(task: String) -> usize {
-///     // do something...
-///     // return a task id
-///     42
-/// }
-/// let save_data = create_action(cx, |task: &String| {
-///   // `task` is given as `&String` because its value is available in `input`
-///   send_new_todo_to_api(task.clone())
-/// });
-///
-/// // the argument currently running
-/// let input = save_data.input();
-/// // the most recent returned result
-/// let result_of_call = save_data.value();
-/// // whether the call is pending
-/// let pending = save_data.pending();
-/// // how many times the action has run
-/// // useful for reactively updating something else in response to a `dispatch` and response
-/// let version = save_data.version();
-///
-/// // before we do anything
-/// assert_eq!(input(), None); // no argument yet
-/// assert_eq!(pending(), false); // isn't pending a response
-/// assert_eq!(result_of_call(), None); // there's no "last value"
-/// assert_eq!(version(), 0);
-/// # if false {
-/// // dispatch the action
-/// save_data.dispatch("My todo".to_string());
-///
-/// // when we're making the call
-/// // assert_eq!(input(), Some("My todo".to_string()));
-/// // assert_eq!(pending(), true); // is pending
-/// // assert_eq!(result_of_call(), None); // has not yet gotten a response
-///
-/// // after call has resolved
-/// assert_eq!(input(), None); // input clears out after resolved
-/// assert_eq!(pending(), false); // no longer pending
-/// assert_eq!(result_of_call(), Some(42));
-/// assert_eq!(version(), 1);
-/// # }
-/// # });
-/// ```
-///
-/// The input to the `async` function should always be a single value,
-/// but it can be of any type. The argument is always passed by reference to the
-/// function, because it is stored in [Action::input] as well.
-///
-/// ```rust
-/// # use leptos::*;
-/// # run_scope(create_runtime(), |cx| {
-/// // if there's a single argument, just use that
-/// let action1 = create_action(cx, |input: &String| {
-///     let input = input.clone();
-///     async move { todo!() }
-/// });
-///
-/// // if there are no arguments, use the unit type `()`
-/// let action2 = create_action(cx, |input: &()| async { todo!() });
-///
-/// // if there are multiple arguments, use a tuple
-/// let action3 =
-///     create_action(cx, |input: &(usize, String)| async { todo!() });
-/// # });
-/// ```
-pub struct Action<I, O>(StoredValue<ActionState<I, O>>)
-where
-    I: 'static,
-    O: 'static;
+/// This is used for propagating errors from the server to the client when JS/WASM are not
+/// supported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerActionError {
+    path: Arc<str>,
+    err: Arc<str>,
+}
 
-impl<I, O> Action<I, O>
-where
-    I: 'static,
-    O: 'static,
-{
-    /// Calls the `async` function with a reference to the input type as its argument.
-    pub fn dispatch(&self, input: I) {
-        self.0.with_value(|a| a.dispatch(input))
+impl ServerActionError {
+    /// Creates a new error associated with the given path.
+    pub fn new(path: &str, err: &str) -> Self {
+        Self {
+            path: path.into(),
+            err: err.into(),
+        }
     }
 
-    /// Whether the action has been dispatched and is currently waiting for its future to be resolved.
-    pub fn pending(&self) -> ReadSignal<bool> {
-        self.0.with_value(|a| a.pending.read_only())
+    /// The path with which this error is associated.
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
-    /// Updates whether the action is currently pending.
-    pub fn set_pending(&self, pending: bool) {
-        self.0.try_with_value(|a| a.pending.set(pending));
-    }
-
-    /// The URL associated with the action (typically as part of a server function.)
-    /// This enables integration with the `ActionForm` component in `leptos_router`.
-    pub fn url(&self) -> Option<String> {
-        self.0.with_value(|a| a.url.as_ref().cloned())
-    }
-
-    /// Associates the URL of the given server function with this action.
-    /// This enables integration with the `ActionForm` component in `leptos_router`.
-    pub fn using_server_fn<T: ServerFn>(self) -> Self {
-        let prefix = T::prefix();
-        self.0.update_value(|state| {
-            state.url = if prefix.is_empty() {
-                Some(T::url().to_string())
-            } else {
-                Some(prefix.to_string() + "/" + T::url())
-            };
-        });
-        self
-    }
-
-    /// How many times the action has successfully resolved.
-    pub fn version(&self) -> RwSignal<usize> {
-        self.0.with_value(|a| a.version)
-    }
-
-    /// The current argument that was dispatched to the `async` function.
-    /// `Some` while we are waiting for it to resolve, `None` if it has resolved.
-    pub fn input(&self) -> RwSignal<Option<I>> {
-        self.0.with_value(|a| a.input)
-    }
-
-    /// The most recent return value of the `async` function.
-    pub fn value(&self) -> RwSignal<Option<O>> {
-        self.0.with_value(|a| a.value)
+    /// The error message.
+    pub fn err(&self) -> &str {
+        &self.err
     }
 }
 
-impl<I, O> Clone for Action<I, O>
+/// An [`ArcAction`] that can be used to call a server function.
+pub struct ArcServerAction<S>
 where
-    I: 'static,
-    O: 'static,
+    S: ServerFn + 'static,
+    S::Output: 'static,
+{
+    inner: ArcAction<S, Result<S::Output, ServerFnError<S::Error>>>,
+    #[cfg(any(debug_assertions, leptos_debuginfo))]
+    defined_at: &'static Location<'static>,
+}
+
+impl<S> ArcServerAction<S>
+where
+    S: ServerFn + Clone + Send + Sync + 'static,
+    S::Output: Send + Sync + 'static,
+    S::Error: Send + Sync + 'static,
+{
+    /// Creates a new [`ArcAction`] that will call the server function `S` when dispatched.
+    #[track_caller]
+    pub fn new() -> Self {
+        let err = use_context::<ServerActionError>().and_then(|error| {
+            (error.path() == S::PATH)
+                .then(|| ServerFnError::<S::Error>::de(error.err()))
+                .map(Err)
+        });
+        Self {
+            inner: ArcAction::new_with_value(err, |input: &S| {
+                S::run_on_client(input.clone())
+            }),
+            #[cfg(any(debug_assertions, leptos_debuginfo))]
+            defined_at: Location::caller(),
+        }
+    }
+}
+
+impl<S> Deref for ArcServerAction<S>
+where
+    S: ServerFn + 'static,
+    S::Output: 'static,
+{
+    type Target = ArcAction<S, Result<S::Output, ServerFnError<S::Error>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<S> Clone for ArcServerAction<S>
+where
+    S: ServerFn + 'static,
+    S::Output: 'static,
 {
     fn clone(&self) -> Self {
-        Self(self.0)
+        Self {
+            inner: self.inner.clone(),
+            #[cfg(any(debug_assertions, leptos_debuginfo))]
+            defined_at: self.defined_at,
+        }
     }
 }
 
-impl<I, O> Copy for Action<I, O>
+impl<S> Default for ArcServerAction<S>
 where
-    I: 'static,
-    O: 'static,
+    S: ServerFn + Clone + Send + Sync + 'static,
+    S::Output: Send + Sync + 'static,
+    S::Error: Send + Sync + 'static,
 {
-}
-
-struct ActionState<I, O>
-where
-    I: 'static,
-    O: 'static,
-{
-    /// How many times the action has successfully resolved.
-    pub version: RwSignal<usize>,
-    /// The current argument that was dispatched to the `async` function.
-    /// `Some` while we are waiting for it to resolve, `None` if it has resolved.
-    pub input: RwSignal<Option<I>>,
-    /// The most recent return value of the `async` function.
-    pub value: RwSignal<Option<O>>,
-    pending: RwSignal<bool>,
-    url: Option<String>,
-    #[allow(clippy::complexity)]
-    action_fn: Rc<dyn Fn(&I) -> Pin<Box<dyn Future<Output = O>>>>,
-}
-
-impl<I, O> ActionState<I, O>
-where
-    I: 'static,
-    O: 'static,
-{
-    /// Calls the `async` function with a reference to the input type as its argument.
-    pub fn dispatch(&self, input: I) {
-        let fut = (self.action_fn)(&input);
-        self.input.set(Some(input));
-        let input = self.input;
-        let version = self.version;
-        let pending = self.pending;
-        let value = self.value;
-        pending.set(true);
-        spawn_local(async move {
-            let new_value = fut.await;
-            value.set(Some(new_value));
-            input.set(None);
-            pending.set(false);
-            version.update(|n| *n += 1);
-        })
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// Creates an [Action] to synchronize an imperative `async` call to the synchronous reactive system.
-///
-/// If you’re trying to load data by running an `async` function reactively, you probably
-/// want to use a [create_resource](leptos_reactive::create_resource) instead. If you’re trying
-/// to occasionally run an `async` function in response to something like a user clicking a button,
-/// you're in the right place.
-///
-/// ```rust
-/// # use leptos::*;
-/// # run_scope(create_runtime(), |cx| {
-/// async fn send_new_todo_to_api(task: String) -> usize {
-///     // do something...
-///     // return a task id
-///     42
-/// }
-/// let save_data = create_action(cx, |task: &String| {
-///   // `task` is given as `&String` because its value is available in `input`
-///   send_new_todo_to_api(task.clone())
-/// });
-///
-/// // the argument currently running
-/// let input = save_data.input();
-/// // the most recent returned result
-/// let result_of_call = save_data.value();
-/// // whether the call is pending
-/// let pending = save_data.pending();
-/// // how many times the action has run
-/// // useful for reactively updating something else in response to a `dispatch` and response
-/// let version = save_data.version();
-///
-/// // before we do anything
-/// assert_eq!(input(), None); // no argument yet
-/// assert_eq!(pending(), false); // isn't pending a response
-/// assert_eq!(result_of_call(), None); // there's no "last value"
-/// assert_eq!(version(), 0);
-/// # if false {
-/// // dispatch the action
-/// save_data.dispatch("My todo".to_string());
-///
-/// // when we're making the call
-/// // assert_eq!(input(), Some("My todo".to_string()));
-/// // assert_eq!(pending(), true); // is pending
-/// // assert_eq!(result_of_call(), None); // has not yet gotten a response
-///
-/// // after call has resolved
-/// assert_eq!(input(), None); // input clears out after resolved
-/// assert_eq!(pending(), false); // no longer pending
-/// assert_eq!(result_of_call(), Some(42));
-/// assert_eq!(version(), 1);
-/// # }
-/// # });
-/// ```
-///
-/// The input to the `async` function should always be a single value,
-/// but it can be of any type. The argument is always passed by reference to the
-/// function, because it is stored in [Action::input] as well.
-///
-/// ```rust
-/// # use leptos::*;
-/// # run_scope(create_runtime(), |cx| {
-/// // if there's a single argument, just use that
-/// let action1 = create_action(cx, |input: &String| {
-///     let input = input.clone();
-///     async move { todo!() }
-/// });
-///
-/// // if there are no arguments, use the unit type `()`
-/// let action2 = create_action(cx, |input: &()| async { todo!() });
-///
-/// // if there are multiple arguments, use a tuple
-/// let action3 =
-///     create_action(cx, |input: &(usize, String)| async { todo!() });
-/// # });
-/// ```
-pub fn create_action<I, O, F, Fu>(cx: Scope, action_fn: F) -> Action<I, O>
+impl<S> DefinedAt for ArcServerAction<S>
 where
-    I: 'static,
-    O: 'static,
-    F: Fn(&I) -> Fu + 'static,
-    Fu: Future<Output = O> + 'static,
+    S: ServerFn + 'static,
+    S::Output: 'static,
 {
-    let version = create_rw_signal(cx, 0);
-    let input = create_rw_signal(cx, None);
-    let value = create_rw_signal(cx, None);
-    let pending = create_rw_signal(cx, false);
-    let action_fn = Rc::new(move |input: &I| {
-        let fut = action_fn(input);
-        Box::pin(async move { fut.await }) as Pin<Box<dyn Future<Output = O>>>
-    });
-
-    Action(store_value(
-        cx,
-        ActionState {
-            version,
-            url: None,
-            input,
-            value,
-            pending,
-            action_fn,
-        },
-    ))
+    fn defined_at(&self) -> Option<&'static Location<'static>> {
+        #[cfg(any(debug_assertions, leptos_debuginfo))]
+        {
+            Some(self.defined_at)
+        }
+        #[cfg(not(any(debug_assertions, leptos_debuginfo)))]
+        {
+            None
+        }
+    }
 }
 
-/// Creates an [Action] that can be used to call a server function.
-///
-/// ```rust
-/// # use leptos::*;
-///
-/// #[server(MyServerFn)]
-/// async fn my_server_fn() -> Result<(), ServerFnError> {
-///     todo!()
-/// }
-///
-/// # run_scope(create_runtime(), |cx| {
-/// let my_server_action = create_server_action::<MyServerFn>(cx);
-/// # });
-/// ```
-pub fn create_server_action<S>(
-    cx: Scope,
-) -> Action<S, Result<S::Output, ServerFnError>>
+/// An [`Action`] that can be used to call a server function.
+pub struct ServerAction<S>
 where
-    S: Clone + ServerFn,
+    S: ServerFn + 'static,
+    S::Output: 'static,
 {
-    #[cfg(feature = "ssr")]
-    let c = move |args: &S| S::call_fn(args.clone(), cx);
-    #[cfg(not(feature = "ssr"))]
-    let c = move |args: &S| S::call_fn_client(args.clone(), cx);
-    create_action(cx, c).using_server_fn::<S>()
+    inner: Action<S, Result<S::Output, ServerFnError<S::Error>>>,
+    #[cfg(any(debug_assertions, leptos_debuginfo))]
+    defined_at: &'static Location<'static>,
+}
+
+impl<S> ServerAction<S>
+where
+    S: ServerFn + Send + Sync + Clone + 'static,
+    S::Output: Send + Sync + 'static,
+    S::Error: Send + Sync + 'static,
+{
+    /// Creates a new [`Action`] that will call the server function `S` when dispatched.
+    pub fn new() -> Self {
+        let err = use_context::<ServerActionError>().and_then(|error| {
+            (error.path() == S::PATH)
+                .then(|| ServerFnError::<S::Error>::de(error.err()))
+                .map(Err)
+        });
+        Self {
+            inner: Action::new_with_value(err, |input: &S| {
+                S::run_on_client(input.clone())
+            }),
+            #[cfg(any(debug_assertions, leptos_debuginfo))]
+            defined_at: Location::caller(),
+        }
+    }
+}
+
+impl<S> Clone for ServerAction<S>
+where
+    S: ServerFn + 'static,
+    S::Output: 'static,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for ServerAction<S>
+where
+    S: ServerFn + 'static,
+    S::Output: 'static,
+{
+}
+
+impl<S> Deref for ServerAction<S>
+where
+    S: ServerFn + Clone + Send + Sync + 'static,
+    S::Output: Send + Sync + 'static,
+    S::Error: Send + Sync + 'static,
+{
+    type Target = Action<S, Result<S::Output, ServerFnError<S::Error>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<S> From<ServerAction<S>>
+    for Action<S, Result<S::Output, ServerFnError<S::Error>>>
+where
+    S: ServerFn + 'static,
+    S::Output: 'static,
+{
+    fn from(value: ServerAction<S>) -> Self {
+        value.inner
+    }
+}
+
+impl<S> Default for ServerAction<S>
+where
+    S: ServerFn + Clone + Send + Sync + 'static,
+    S::Output: Send + Sync + 'static,
+    S::Error: Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> DefinedAt for ServerAction<S>
+where
+    S: ServerFn + 'static,
+    S::Output: 'static,
+{
+    fn defined_at(&self) -> Option<&'static Location<'static>> {
+        #[cfg(any(debug_assertions, leptos_debuginfo))]
+        {
+            Some(self.defined_at)
+        }
+        #[cfg(not(any(debug_assertions, leptos_debuginfo)))]
+        {
+            None
+        }
+    }
 }
