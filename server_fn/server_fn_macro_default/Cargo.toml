@@ -1,20 +1,21 @@
 [package]
 name = "server_fn_macro_default"
-version = { workspace = true }
-edition = "2021"
 authors = ["Greg Johnston"]
 license = "MIT"
 repository = "https://github.com/leptos-rs/leptos"
 description = "The default implementation of the server_fn macro without a context"
+version = { workspace = true }
+edition.workspace = true
 
 [lib]
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1"
-syn = { version = "1", features = ["full"] }
+syn = { version = "2.0" }
 server_fn_macro = { workspace = true }
 
-[dev-dependencies]
-server_fn = { workspace = true }
-serde = "1"
+[features]
+nightly = ["server_fn_macro/nightly"]
+ssr = ["server_fn_macro/ssr"]
+actix = ["server_fn_macro/actix"]
+axum = ["server_fn_macro/axum"]

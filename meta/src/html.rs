@@ -1,116 +1,168 @@
-use crate::TextProp;
-use cfg_if::cfg_if;
-use leptos::*;
-use std::{cell::RefCell, rc::Rc};
-
-/// Contains the current metadata for the document's `<html>`.
-#[derive(Clone, Default)]
-pub struct HtmlContext {
-    lang: Rc<RefCell<Option<TextProp>>>,
-    dir: Rc<RefCell<Option<TextProp>>>,
-    class: Rc<RefCell<Option<TextProp>>>,
-}
-
-impl HtmlContext {
-    /// Converts the `<html>` metadata into an HTML string.
-    pub fn as_string(&self) -> Option<String> {
-        let lang = self
-            .lang
-            .borrow()
-            .as_ref()
-            .map(|val| format!("lang=\"{}\"", val.get()));
-        let dir = self
-            .dir
-            .borrow()
-            .as_ref()
-            .map(|val| format!("dir=\"{}\"", val.get()));
-        let class = self
-            .class
-            .borrow()
-            .as_ref()
-            .map(|val| format!("class=\"{}\"", val.get()));
-        let mut val = [lang, dir, class]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if val.is_empty() {
-            None
-        } else {
-            val.insert(0, ' ');
-            Some(val)
-        }
-    }
-}
-
-impl std::fmt::Debug for HtmlContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TitleContext").finish()
-    }
-}
+use crate::ServerMetaContext;
+use leptos::{
+    attr::NextAttribute,
+    component, html,
+    reactive::owner::use_context,
+    tachys::{
+        dom::document,
+        html::attribute::Attribute,
+        hydration::Cursor,
+        view::{
+            add_attr::AddAnyAttr, Mountable, Position, PositionState, Render,
+            RenderHtml,
+        },
+    },
+    IntoView,
+};
 
 /// A component to set metadata on the document’s `<html>` element from
 /// within the application.
 ///
+/// This component takes no props, but can take any number of spread attributes
+/// following the `{..}` operator.
+///
 /// ```
-/// use leptos::*;
+/// use leptos::prelude::*;
 /// use leptos_meta::*;
 ///
 /// #[component]
-/// fn MyApp(cx: Scope) -> impl IntoView {
-///     provide_meta_context(cx);
+/// fn MyApp() -> impl IntoView {
+///     provide_meta_context();
 ///
-///     view! { cx,
+///     view! {
 ///       <main>
-///         <Html lang="he" dir="rtl"/>
+///         <Html
+///           {..}
+///           lang="he"
+///           dir="rtl"
+///           data-theme="dark"
+///         />
 ///       </main>
 ///     }
 /// }
 /// ```
-#[component(transparent)]
-pub fn Html(
-    cx: Scope,
-    /// The `lang` attribute on the `<html>`.
-    #[prop(optional, into)]
-    lang: Option<TextProp>,
-    /// The `dir` attribute on the `<html>`.
-    #[prop(optional, into)]
-    dir: Option<TextProp>,
-    /// The `class` attribute on the `<html>`.
-    #[prop(optional, into)]
-    class: Option<TextProp>,
-) -> impl IntoView {
-    cfg_if! {
-        if #[cfg(any(feature = "csr", feature = "hydrate"))] {
-            let el = document().document_element().expect("there to be a <html> element");
+#[component]
+pub fn Html() -> impl IntoView {
+    HtmlView { attributes: () }
+}
 
-            if let Some(lang) = lang {
-                let el = el.clone();
-                create_render_effect(cx, move |_| {
-                    let value = lang.get();
-                    _ = el.set_attribute("lang", &value);
-                });
-            }
+struct HtmlView<At> {
+    attributes: At,
+}
 
-            if let Some(dir) = dir {
-                let el = el.clone();
-                create_render_effect(cx, move |_| {
-                    let value = dir.get();
-                    _ = el.set_attribute("dir", &value);
-                });
-            }
+struct HtmlViewState<At>
+where
+    At: Attribute,
+{
+    attributes: At::State,
+}
 
-            if let Some(class) = class {
-                create_render_effect(cx, move |_| {
-                    let value = class.get();
-                    _ = el.set_attribute("class", &value);
-                });
-            }
-        } else {
-            let meta = crate::use_head(cx);
-            *meta.html.lang.borrow_mut() = lang;
-            *meta.html.dir.borrow_mut() = dir;
-            *meta.html.class.borrow_mut() = class;
+impl<At> Render for HtmlView<At>
+where
+    At: Attribute,
+{
+    type State = HtmlViewState<At>;
+
+    fn build(self) -> Self::State {
+        let el = document()
+            .document_element()
+            .expect("there to be a <html> element");
+
+        let attributes = self.attributes.build(&el);
+
+        HtmlViewState { attributes }
+    }
+
+    fn rebuild(self, state: &mut Self::State) {
+        self.attributes.rebuild(&mut state.attributes);
+    }
+}
+
+impl<At> AddAnyAttr for HtmlView<At>
+where
+    At: Attribute,
+{
+    type Output<SomeNewAttr: Attribute> =
+        HtmlView<<At as NextAttribute>::Output<SomeNewAttr>>;
+
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        attr: NewAttr,
+    ) -> Self::Output<NewAttr>
+    where
+        Self::Output<NewAttr>: RenderHtml,
+    {
+        HtmlView {
+            attributes: self.attributes.add_any_attr(attr),
         }
+    }
+}
+
+impl<At> RenderHtml for HtmlView<At>
+where
+    At: Attribute,
+{
+    type AsyncOutput = HtmlView<At::AsyncOutput>;
+
+    const MIN_LENGTH: usize = At::MIN_LENGTH;
+
+    fn dry_resolve(&mut self) {
+        self.attributes.dry_resolve();
+    }
+
+    async fn resolve(self) -> Self::AsyncOutput {
+        HtmlView {
+            attributes: self.attributes.resolve().await,
+        }
+    }
+
+    fn to_html_with_buf(
+        self,
+        _buf: &mut String,
+        _position: &mut Position,
+        _escape: bool,
+        _mark_branches: bool,
+    ) {
+        if let Some(meta) = use_context::<ServerMetaContext>() {
+            let mut buf = String::new();
+            _ = html::attributes_to_html(self.attributes, &mut buf);
+            if !buf.is_empty() {
+                _ = meta.html.send(buf);
+            }
+        }
+    }
+
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        _cursor: &Cursor,
+        _position: &PositionState,
+    ) -> Self::State {
+        let el = document()
+            .document_element()
+            .expect("there to be a <html> element");
+
+        let attributes = self.attributes.hydrate::<FROM_SERVER>(&el);
+
+        HtmlViewState { attributes }
+    }
+}
+
+impl<At> Mountable for HtmlViewState<At>
+where
+    At: Attribute,
+{
+    fn unmount(&mut self) {}
+
+    fn mount(
+        &mut self,
+        _parent: &leptos::tachys::renderer::types::Element,
+        _marker: Option<&leptos::tachys::renderer::types::Node>,
+    ) {
+        // <Html> only sets attributes
+        // the <html> tag doesn't need to be mounted anywhere, of course
+    }
+
+    fn insert_before_this(&self, _child: &mut dyn Mountable) -> bool {
+        false
     }
 }

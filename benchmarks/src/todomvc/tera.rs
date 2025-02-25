@@ -55,7 +55,7 @@ static TEMPLATE: &str = r#"<main>
 						{% else %}
 						 <li><a href="/">All</a></li>
 						{% endif %}
-				
+
 						{% if mode_active %}
                         <li><a href="/active" class="selected">Active</a></li>
 						{% else %}
@@ -87,17 +87,17 @@ static TEMPLATE: &str = r#"<main>
         </main>"#;
 
 #[bench]
-fn tera_todomvc(b: &mut Bencher) {
+fn tera_todomvc_ssr(b: &mut Bencher) {
     use serde::{Deserialize, Serialize};
     use tera::*;
 
-    lazy_static::lazy_static! {
-        static ref TERA: Tera = {
+
+        static LazyLock<TERA>: Tera = LazyLock( || {
             let mut tera = Tera::default();
             tera.add_raw_templates(vec![("template.html", TEMPLATE)]).unwrap();
             tera
-        };
-    }
+        });
+
 
     #[derive(Serialize, Deserialize)]
     struct Todo {
@@ -127,17 +127,17 @@ fn tera_todomvc(b: &mut Bencher) {
 }
 
 #[bench]
-fn tera_todomvc_1000(b: &mut Bencher) {
+fn tera_todomvc_ssr_1000(b: &mut Bencher) {
     use serde::{Deserialize, Serialize};
     use tera::*;
 
-    lazy_static::lazy_static! {
-        static ref TERA: Tera = {
-            let mut tera = Tera::default();
-            tera.add_raw_templates(vec![("template.html", TEMPLATE)]).unwrap();
-            tera
-        };
-    }
+
+    static  TERA: LazyLock<Tera> = LazyLock::new(|| {
+        let mut tera = Tera::default();
+        tera.add_raw_templates(vec![("template.html", TEMPLATE)]).unwrap();
+        tera
+    });
+
 
     #[derive(Serialize, Deserialize)]
     struct Todo {

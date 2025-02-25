@@ -1,14 +1,15 @@
-use crate::parsing::{is_component_node, value_to_string};
+use crate::parsing::is_component_node;
 use anyhow::Result;
-use quote::quote;
+use quote::ToTokens;
+use rstml::node::{Node, NodeAttribute};
 use serde::{Deserialize, Serialize};
-use syn_rsx::Node;
 
 // A lightweight virtual DOM structure we can use to hold
 // the state of a Leptos view macro template. This is because
 // `syn` types are `!Send` so we can't store them as we might like.
 // This is only used to diff view macros for hot reloading so it's very minimal
 // and ignores many of the data types.
+#[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LNode {
     Fragment(Vec<LNode>),
@@ -20,7 +21,11 @@ pub enum LNode {
     },
     // don't need anything; skipped during patching because it should
     // contain its own view macros
-    Component(String, Vec<(String, String)>),
+    Component {
+        name: String,
+        props: Vec<(String, String)>,
+        children: Vec<LNode>,
+    },
     DynChild(String),
 }
 
@@ -34,18 +39,26 @@ pub enum LAttributeValue {
 }
 
 impl LNode {
+    /// # Errors
+    ///
+    /// Will return `Err` if parsing the view fails.
     pub fn parse_view(nodes: Vec<Node>) -> Result<LNode> {
         let mut out = Vec::new();
         for node in nodes {
             LNode::parse_node(node, &mut out)?;
         }
         if out.len() == 1 {
-            Ok(out.pop().unwrap())
+            out.pop().ok_or_else(|| {
+                unreachable!("The last element should not be None.")
+            })
         } else {
             Ok(LNode::Fragment(out))
         }
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if parsing the node fails.
     pub fn parse_node(node: Node, views: &mut Vec<LNode>) -> Result<()> {
         match node {
             Node::Fragment(frag) => {
@@ -54,46 +67,44 @@ impl LNode {
                 }
             }
             Node::Text(text) => {
-                if let Some(value) = value_to_string(&text.value) {
-                    views.push(LNode::Text(value));
-                } else {
-                    let value = text.value.as_ref();
-                    let code = quote! { #value };
-                    let code = code.to_string();
-                    views.push(LNode::DynChild(code));
-                }
+                views.push(LNode::Text(text.value_string()));
             }
             Node::Block(block) => {
-                let value = block.value.as_ref();
-                let code = quote! { #value };
-                let code = code.to_string();
-                views.push(LNode::DynChild(code));
+                views.push(LNode::DynChild(
+                    block.into_token_stream().to_string(),
+                ));
             }
             Node::Element(el) => {
                 if is_component_node(&el) {
-                    views.push(LNode::Component(
-                        el.name.to_string(),
-                        el.attributes
+                    let name = el.name().to_string();
+                    let mut children = Vec::new();
+                    for child in el.children {
+                        LNode::parse_node(child, &mut children)?;
+                    }
+                    views.push(LNode::Component {
+                        name,
+                        props: el
+                            .open_tag
+                            .attributes
                             .into_iter()
                             .filter_map(|attr| match attr {
-                                Node::Attribute(attr) => Some((
+                                NodeAttribute::Attribute(attr) => Some((
                                     attr.key.to_string(),
-                                    format!("{:#?}", attr.value),
+                                    format!("{:#?}", attr.value()),
                                 )),
-                                _ => None,
+                                NodeAttribute::Block(_) => None,
                             })
                             .collect(),
-                    ));
+                        children,
+                    });
                 } else {
-                    let name = el.name.to_string();
+                    let name = el.name().to_string();
                     let mut attrs = Vec::new();
 
-                    for attr in el.attributes {
-                        if let Node::Attribute(attr) = attr {
+                    for attr in el.open_tag.attributes {
+                        if let NodeAttribute::Attribute(attr) = attr {
                             let name = attr.key.to_string();
-                            if let Some(value) =
-                                attr.value.as_ref().and_then(value_to_string)
-                            {
+                            if let Some(value) = attr.value_literal_string() {
                                 attrs.push((
                                     name,
                                     LAttributeValue::Static(value),
@@ -125,7 +136,7 @@ impl LNode {
         match self {
             LNode::Fragment(frag) => frag.iter().map(LNode::to_html).collect(),
             LNode::Text(text) => text.to_owned(),
-            LNode::Component(name, _) => format!(
+            LNode::Component { name, .. } => format!(
                 "<!--<{name}>--><pre>&lt;{name}/&gt; will load once Rust code \
                  has been compiled.</pre><!--</{name}>-->"
             ),
@@ -149,8 +160,9 @@ impl LNode {
                         LAttributeValue::Static(value) => {
                             Some(format!("{name}=\"{value}\" "))
                         }
-                        LAttributeValue::Dynamic => None,
-                        LAttributeValue::Noop => None,
+                        LAttributeValue::Dynamic | LAttributeValue::Noop => {
+                            None
+                        }
                     })
                     .collect::<String>();
 

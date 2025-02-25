@@ -1,75 +1,76 @@
 use crate::api;
-use leptos::*;
-use leptos_meta::*;
-use leptos_router::*;
+use leptos::either::Either;
+use leptos::prelude::*;
+use leptos_meta::Meta;
+use leptos_router::components::A;
+use leptos_router::hooks::use_params_map;
 
 #[component]
-pub fn Story(cx: Scope) -> impl IntoView {
-    let params = use_params_map(cx);
-    let story = create_resource(
-        cx,
-        move || params().get("id").cloned().unwrap_or_default(),
+pub fn Story() -> impl IntoView {
+    let params = use_params_map();
+    let story = Resource::new(
+        move || params.read().get("id").unwrap_or_default(),
         move |id| async move {
             if id.is_empty() {
                 None
             } else {
-                api::fetch_api::<api::Story>(cx, &api::story(&format!("item/{id}"))).await
+                api::fetch_api::<api::Story>(&api::story(&format!("item/{id}")))
+                    .await
             }
         },
     );
-    let meta_description = move || story.read(cx).and_then(|story| story.map(|story| story.title)).unwrap_or_else(|| "Loading story...".to_string());
 
-    view! { cx,
-        <>
-            <Meta name="description" content=meta_description/>
-                <Suspense fallback=|| view! { cx, "Loading..." }>
-                    {move || story.read(cx).map(|story| match story {
-                        None => view! { cx,  <div class="item-view">"Error loading this story."</div> },
-                        Some(story) => view! { cx,
-                            <div class="item-view">
-                                <div class="item-view-header">
-                                <a href=story.url target="_blank">
-                                    <h1>{story.title}</h1>
-                                </a>
-                                <span class="host">
-                                    "("{story.domain}")"
-                                </span>
-                                {story.user.map(|user| view! { cx,  <p class="meta">
-                                    {story.points}
-                                    " points | by "
-                                    <A href=format!("/users/{user}")>{user.clone()}</A>
-                                    {format!(" {}", story.time_ago)}
-                                </p>})}
-                                </div>
-                                <div class="item-view-comments">
-                                <p class="item-view-comments-header">
-                                    {if story.comments_count.unwrap_or_default() > 0 {
-                                        format!("{} comments", story.comments_count.unwrap_or_default())
-                                    } else {
-                                        "No comments yet.".into()
-                                    }}
-                                </p>
-                                <ul class="comment-children">
-                                    <For
-                                        each=move || story.comments.clone().unwrap_or_default()
-                                        key=|comment| comment.id
-                                        view=move |cx, comment| view! { cx,  <Comment comment /> }
-                                    />
-                                </ul>
-                            </div>
+    Suspense(SuspenseProps::builder().fallback(|| "Loading...").children(ToChildren::to_children(move || Suspend::new(async move {
+        match story.await.clone() {
+            None => Either::Left("Story not found."),
+            Some(story) => {
+                Either::Right(view! {
+                    <Meta name="description" content=story.title.clone()/>
+                    <div class="item-view">
+                        <div class="item-view-header">
+                        <a href=story.url target="_blank">
+                            <h1>{story.title}</h1>
+                        </a>
+                        <span class="host">
+                            "("{story.domain}")"
+                        </span>
+                        {story.user.map(|user| view! {  <p class="meta">
+                            {story.points}
+                            " points | by "
+                            <A href=format!("/users/{user}")>{user.clone()}</A>
+                            {format!(" {}", story.time_ago)}
+                        </p>})}
                         </div>
-                    }})
-                }
-            </Suspense>
-        </>
-    }
+                        <div class="item-view-comments">
+                            <p class="item-view-comments-header">
+                                {if story.comments_count.unwrap_or_default() > 0 {
+                                    format!("{} comments", story.comments_count.unwrap_or_default())
+                                } else {
+                                    "No comments yet.".into()
+                                }}
+                            </p>
+                            <ul class="comment-children">
+                                <For
+                                    each=move || story.comments.clone().unwrap_or_default()
+                                    key=|comment| comment.id
+                                    let:comment
+                                >
+                                    <Comment comment />
+                                </For>
+                            </ul>
+                        </div>
+                    </div>
+                })
+            }
+        }
+    }))).build())
 }
 
 #[component]
-pub fn Comment(cx: Scope, comment: api::Comment) -> impl IntoView {
-    let (open, set_open) = create_signal(cx, true);
+pub fn Comment(comment: api::Comment) -> impl IntoView {
+    let (open, set_open) = signal(true);
 
-    view! { cx,
+    view! {
         <li class="comment">
         <div class="by">
             <A href=format!("/users/{}", comment.user.clone().unwrap_or_default())>{comment.user.clone()}</A>
@@ -77,13 +78,13 @@ pub fn Comment(cx: Scope, comment: api::Comment) -> impl IntoView {
         </div>
         <div class="text" inner_html=comment.content></div>
         {(!comment.comments.is_empty()).then(|| {
-            view! { cx,
+            view! {
                 <div>
                     <div class="toggle" class:open=open>
                         <a on:click=move |_| set_open.update(|n| *n = !*n)>
                             {
                                 let comments_len = comment.comments.len();
-                                move || if open() {
+                                move || if open.get() {
                                     "[-]".into()
                                 } else {
                                     format!("[+] {}{} collapsed", comments_len, pluralize(comments_len))
@@ -91,15 +92,17 @@ pub fn Comment(cx: Scope, comment: api::Comment) -> impl IntoView {
                             }
                         </a>
                     </div>
-                    {move || open().then({
+                    {move || open.get().then({
                         let comments = comment.comments.clone();
-                        move || view! { cx,
+                        move || view! {
                             <ul class="comment-children">
                                 <For
                                     each=move || comments.clone()
                                     key=|comment| comment.id
-                                    view=move |cx, comment: api::Comment| view! { cx, <Comment comment /> }
-                                />
+                                    let:comment
+                                >
+                                    <Comment comment />
+                                </For>
                             </ul>
                         }
                     })}
@@ -107,7 +110,7 @@ pub fn Comment(cx: Scope, comment: api::Comment) -> impl IntoView {
             }
         })}
         </li>
-    }
+    }.into_any()
 }
 
 fn pluralize(n: usize) -> &'static str {

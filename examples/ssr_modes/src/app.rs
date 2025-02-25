@@ -1,129 +1,155 @@
-use lazy_static::lazy_static;
-use leptos::*;
+use std::sync::LazyLock;
+
+use leptos::prelude::*;
 use leptos_meta::*;
-use leptos_router::*;
+use leptos_router::{
+    components::{FlatRoutes, Route, Router},
+    hooks::use_params,
+    params::Params,
+    ParamSegment, SsrMode, StaticSegment,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[component]
-pub fn App(cx: Scope) -> impl IntoView {
+pub fn App() -> impl IntoView {
     // Provides context that manages stylesheets, titles, meta tags, etc.
-    provide_meta_context(cx);
+    provide_meta_context();
+    let fallback = || view! { "Page not found." }.into_view();
 
-    view! { cx,
+    view! {
         <Stylesheet id="leptos" href="/pkg/ssr_modes.css"/>
         <Title text="Welcome to Leptos"/>
-
+        <Meta name="color-scheme" content="dark light"/>
         <Router>
             <main>
-                <Routes>
+                <FlatRoutes fallback>
                     // We’ll load the home page with out-of-order streaming and <Suspense/>
-                    <Route path="" view=|cx| view! { cx, <HomePage/> }/>
+                    <Route path=StaticSegment("") view=HomePage/>
 
                     // We'll load the posts with async rendering, so they can set
                     // the title and metadata *after* loading the data
                     <Route
-                        path="/post/:id"
-                        view=|cx| view! { cx, <Post/> }
+                        path=(StaticSegment("post"), ParamSegment("id"))
+                        view=Post
                         ssr=SsrMode::Async
                     />
-                </Routes>
+                    <Route
+                        path=(StaticSegment("post_in_order"), ParamSegment("id"))
+                        view=Post
+                        ssr=SsrMode::InOrder
+                    />
+                </FlatRoutes>
             </main>
         </Router>
     }
 }
 
 #[component]
-fn HomePage(cx: Scope) -> impl IntoView {
+fn HomePage() -> impl IntoView {
     // load the posts
-    let posts =
-        create_resource(cx, || (), |_| async { list_post_metadata().await });
-    let posts_view = move || {
-        posts.with(cx, |posts| posts
-            .clone()
-            .map(|posts| {
-                posts.iter()
-                .map(|post| view! { cx, <li><a href=format!("/post/{}", post.id)>{&post.title}</a></li>})
-                .collect::<Vec<_>>()
-            })
-        )
+    let posts = Resource::new(|| (), |_| list_post_metadata());
+    let posts = move || {
+        posts
+            .get()
+            .map(|n| n.unwrap_or_default())
+            .unwrap_or_default()
     };
 
-    view! { cx,
+    let posts2 = Resource::new(|| (), |_| list_post_metadata());
+    let posts2 = Resource::new(
+        || (),
+        move |_| async move { posts2.await.as_ref().map(Vec::len).unwrap_or(0) },
+    );
+
+    view! {
         <h1>"My Great Blog"</h1>
-        <Suspense fallback=move || view! { cx, <p>"Loading posts..."</p> }>
-            <ul>{posts_view}</ul>
+        <Suspense fallback=move || view! { <p>"Loading posts..."</p> }>
+            <p>"number of posts: " {Suspend::new(async move { posts2.await })}</p>
+        </Suspense>
+        <Suspense fallback=move || view! { <p>"Loading posts..."</p> }>
+            <ul>
+                <For each=posts key=|post| post.id let:post>
+                    <li>
+                        <a href=format!("/post/{}", post.id)>{post.title.clone()}</a>
+                        "|"
+                        <a href=format!("/post_in_order/{}", post.id)>{post.title} "(in order)"</a>
+                    </li>
+                </For>
+            </ul>
         </Suspense>
     }
 }
 
 #[derive(Params, Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PostParams {
-    id: usize,
+    id: Option<usize>,
 }
 
 #[component]
-fn Post(cx: Scope) -> impl IntoView {
-    let query = use_params::<PostParams>(cx);
+fn Post() -> impl IntoView {
+    let query = use_params::<PostParams>();
     let id = move || {
         query.with(|q| {
-            q.as_ref().map(|q| q.id).map_err(|_| PostError::InvalidId)
+            q.as_ref()
+                .map(|q| q.id.unwrap_or_default())
+                .map_err(|_| PostError::InvalidId)
         })
     };
-    let post = create_resource(cx, id, |id| async move {
+    let post_resource = Resource::new(id, |id| async move {
         match id {
             Err(e) => Err(e),
             Ok(id) => get_post(id)
                 .await
                 .map(|data| data.ok_or(PostError::PostNotFound))
-                .map_err(|_| PostError::ServerError)
-                .flatten(),
+                .map_err(|_| PostError::ServerError),
         }
     });
 
-    let post_view = move || {
-        post.with(cx, |post| {
-            post.clone().map(|post| {
-                view! { cx,
-                    // render content
-                    <h1>{&post.title}</h1>
-                    <p>{&post.content}</p>
+    let post_view = Suspend::new(async move {
+        match post_resource.await.to_owned() {
+            Ok(Ok(post)) => Ok(view! {
+                <h1>{post.title.clone()}</h1>
+                <p>{post.content.clone()}</p>
 
-                    // since we're using async rendering for this page,
-                    // this metadata should be included in the actual HTML <head>
-                    // when it's first served
-                    <Title text=post.title/>
-                    <Meta name="description" content=post.content/>
-                }
-            })
-        })
-    };
+                // since we're using async rendering for this page,
+                // this metadata should be included in the actual HTML <head>
+                // when it's first served
+                <Title text=post.title/>
+                <Meta name="description" content=post.content/>
+            }),
+            _ => Err(PostError::ServerError),
+        }
+    });
 
-    view! { cx,
-        <Suspense fallback=move || view! { cx, <p>"Loading post..."</p> }>
-            <ErrorBoundary fallback=|cx, errors| {
-                view! { cx,
+    view! {
+        <em>"The world's best content."</em>
+        <Suspense fallback=move || view! { <p>"Loading post..."</p> }>
+            <ErrorBoundary fallback=|errors| {
+                view! {
                     <div class="error">
                         <h1>"Something went wrong."</h1>
                         <ul>
-                        {move || errors.get()
-                            .into_iter()
-                            .map(|(_, error)| view! { cx, <li>{error.to_string()} </li> })
-                            .collect::<Vec<_>>()
-                        }
+                            {move || {
+                                errors
+                                    .get()
+                                    .into_iter()
+                                    .map(|(_, error)| view! { <li>{error.to_string()}</li> })
+                                    .collect::<Vec<_>>()
+                            }}
+
                         </ul>
                     </div>
                 }
-            }>
-                {post_view}
-            </ErrorBoundary>
+            }>{post_view}</ErrorBoundary>
         </Suspense>
     }
 }
 
 // Dummy API
-lazy_static! {
-    static ref POSTS: Vec<Post> = vec![
+
+static POSTS: LazyLock<[Post; 3]> = LazyLock::new(|| {
+    [
         Post {
             id: 0,
             title: "My first post".to_string(),
@@ -139,8 +165,8 @@ lazy_static! {
             title: "My third post".to_string(),
             content: "This is my third post".to_string(),
         },
-    ];
-}
+    ]
+});
 
 #[derive(Error, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostError {
@@ -165,7 +191,7 @@ pub struct PostMetadata {
     title: String,
 }
 
-#[server(ListPostMetadata, "/api")]
+#[server]
 pub async fn list_post_metadata() -> Result<Vec<PostMetadata>, ServerFnError> {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     Ok(POSTS
@@ -177,7 +203,7 @@ pub async fn list_post_metadata() -> Result<Vec<PostMetadata>, ServerFnError> {
         .collect())
 }
 
-#[server(GetPost, "/api")]
+#[server]
 pub async fn get_post(id: usize) -> Result<Option<Post>, ServerFnError> {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     Ok(POSTS.iter().find(|post| post.id == id).cloned())

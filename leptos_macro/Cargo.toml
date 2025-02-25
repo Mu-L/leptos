@@ -1,49 +1,91 @@
 [package]
 name = "leptos_macro"
 version = { workspace = true }
-edition = "2021"
 authors = ["Greg Johnston"]
 license = "MIT"
 repository = "https://github.com/leptos-rs/leptos"
 description = "view macro for the Leptos web framework."
 readme = "../README.md"
+rust-version.workspace = true
+edition.workspace = true
 
 [lib]
 proc-macro = true
 
 [dependencies]
-attribute-derive = { version = "0.5", features = ["syn-full"] }
-cfg-if = "1"
-html-escape = "0.2"
-itertools = "0.10"
-prettyplease = "0.1"
-proc-macro-error = "1"
-proc-macro2 = "1"
-quote = "1"
-syn = { version = "1", features = ["full"] }
-syn-rsx = "0.9"
-leptos_dom = { workspace = true }
+attribute-derive = { version = "0.10.3", features = ["syn-full"] }
+cfg-if = "1.0"
+html-escape = "0.2.13"
+itertools = { workspace = true }
+prettyplease = "0.2.25"
+proc-macro-error2 = { version = "2.0", default-features = false }
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+rstml = "0.12.0"
 leptos_hot_reload = { workspace = true }
-leptos_reactive = { workspace = true }
-leptos_server = { workspace = true }
 server_fn_macro = { workspace = true }
-convert_case = "0.6.0"
-uuid = { version = "1", features = ["v4"] }
+convert_case = "0.7"
+uuid = { version = "1.11", features = ["v4"] }
+tracing = { version = "0.1.41", optional = true }
 
 [dev-dependencies]
-log = "0.4"
-typed-builder = "0.13"
-trybuild = "1"
+log = "0.4.22"
+typed-builder = "0.20.0"
+trybuild = "1.0"
 leptos = { path = "../leptos" }
+leptos_router = { path = "../router", features = ["ssr"] }
+server_fn = { path = "../server_fn", features = ["cbor"] }
+insta = "1.41"
+serde = "1.0"
 
 [features]
-default = ["ssr"]
-csr = ["leptos_dom/web", "leptos_reactive/csr"]
-hydrate = ["leptos_dom/web", "leptos_reactive/hydrate"]
-ssr = ["leptos_dom/ssr", "leptos_reactive/ssr"]
-stable = ["leptos_dom/stable", "leptos_reactive/stable"]
-tracing = []
+csr = []
+hydrate = []
+ssr = ["server_fn_macro/ssr", "leptos/ssr"]
+nightly = ["server_fn_macro/nightly"]
+tracing = ["dep:tracing"]
+islands = []
+trace-components = []
+trace-component-props = []
+actix = ["server_fn_macro/actix"]
+axum = ["server_fn_macro/axum"]
+generic = ["server_fn_macro/generic"]
 
 [package.metadata.cargo-all-features]
-denylist = ["stable", "tracing"]
-skip_feature_sets = [["csr", "hydrate"], ["hydrate", "csr"], ["hydrate", "ssr"]]
+denylist = ["nightly", "tracing", "trace-component-props"]
+skip_feature_sets = [
+  [
+    "csr",
+    "hydrate",
+  ],
+  [
+    "hydrate",
+    "csr",
+  ],
+  [
+    "hydrate",
+    "ssr",
+  ],
+  [
+    "actix",
+    "axum",
+  ],
+  [
+    "actix",
+    "generic",
+  ],
+  [
+    "generic",
+    "axum",
+  ],
+]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--generate-link-to-definition"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(leptos_debuginfo)',
+  'cfg(erase_components)',
+] }

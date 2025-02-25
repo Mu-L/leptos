@@ -2,8 +2,10 @@
 
 This example shows how to fetch data from the client in WebAssembly.
 
-## Client Side Rendering
+## Getting Started
 
-To run it as a client-side app, you can issue `trunk serve --open` in the root. This will build the entire app into one CSR bundle.
+See the [Examples README](../README.md) for setup and run instructions.
 
-> If you don't have `trunk` installed, [click here for install instructions.](https://trunkrs.dev/)
+## Quick Start
+
+Run `trunk serve --open` to run this example.
