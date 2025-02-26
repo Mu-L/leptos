@@ -1,52 +1,61 @@
-use cfg_if::cfg_if;
-use leptos::{component, view, IntoView, Scope};
-use leptos_meta::*;
-use leptos_router::*;
+use leptos::prelude::*;
 mod api;
-pub mod error_template;
-pub mod fallback;
-pub mod handlers;
 mod routes;
-use routes::nav::*;
-use routes::stories::*;
-use routes::story::*;
-use routes::users::*;
+use leptos_meta::{provide_meta_context, Link, Meta, MetaTags, Stylesheet};
+use leptos_router::{
+    components::{FlatRoutes, Route, Router, RoutingProgress},
+    OptionalParamSegment, ParamSegment, StaticSegment,
+};
+use routes::{nav::*, stories::*, story::*, users::*};
+use std::time::Duration;
 
-#[component]
-pub fn App(cx: Scope) -> impl IntoView {
-    provide_meta_context(cx);
+pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
-        cx,
-        <>
-            <Link rel="shortcut icon" type_="image/ico" href="/favicon.ico"/>
-            <Stylesheet id="leptos" href="/pkg/hackernews_axum.css"/>
-            <Meta name="description" content="Leptos implementation of a HackerNews demo."/>
-            <Router>
-                <Nav />
-                <main>
-                    <Routes>
-                        <Route path="users/:id" view=|cx| view! { cx,  <User/> }/>
-                        <Route path="stories/:id" view=|cx| view! { cx,  <Story/> }/>
-                        <Route path=":stories?" view=|cx| view! { cx,  <Stories/> }/>
-                    </Routes>
-                </main>
-            </Router>
-        </>
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <AutoReload options=options.clone() />
+                <HydrationScripts options/>
+                <MetaTags/>
+            </head>
+            <body>
+                <App/>
+            </body>
+        </html>
     }
 }
 
-// Needs to be in lib.rs AFAIK because wasm-bindgen needs us to be compiling a lib. I may be wrong.
-cfg_if! {
-    if #[cfg(feature = "hydrate")] {
-        use wasm_bindgen::prelude::wasm_bindgen;
+#[component]
+pub fn App() -> impl IntoView {
+    provide_meta_context();
+    let (is_routing, set_is_routing) = signal(false);
 
-        #[wasm_bindgen]
-        pub fn hydrate() {
-            _ = console_log::init_with_level(log::Level::Debug);
-            console_error_panic_hook::set_once();
-            leptos::mount_to_body(move |cx| {
-                view! { cx, <App/> }
-            });
-        }
+    view! {
+        <Stylesheet id="leptos" href="/pkg/hackernews_axum.css"/>
+        <Link rel="shortcut icon" type_="image/ico" href="/favicon.ico"/>
+        <Meta name="description" content="Leptos implementation of a HackerNews demo."/>
+        <Router set_is_routing>
+            // shows a progress bar while async data are loading
+            <div class="routing-progress">
+                <RoutingProgress is_routing max_time=Duration::from_millis(250)/>
+            </div>
+            <Nav />
+            <main>
+                <FlatRoutes fallback=|| "Not found.">
+                    <Route path=(StaticSegment("users"), ParamSegment("id")) view=User/>
+                    <Route path=(StaticSegment("stories"), ParamSegment("id")) view=Story/>
+                    <Route path=OptionalParamSegment("stories") view=Stories/>
+                </FlatRoutes>
+            </main>
+        </Router>
     }
+}
+
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn hydrate() {
+    console_error_panic_hook::set_once();
+    leptos::mount::hydrate_body(App);
 }

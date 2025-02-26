@@ -1,15 +1,10 @@
-use crate::{
-    error_template::{ErrorTemplate, ErrorTemplateProps},
-    errors::AppError,
-};
-use leptos::*;
+use crate::{error_template::ErrorTemplate, errors::AppError};
+use leptos::prelude::*;
 use leptos_meta::*;
-use leptos_router::*;
-
-#[cfg(feature = "ssr")]
-pub fn register_server_functions() {
-    _ = CauseInternalServerError::register();
-}
+use leptos_router::{
+    components::{Route, Router, Routes},
+    StaticSegment,
+};
 
 #[server(CauseInternalServerError, "/api")]
 pub async fn cause_internal_server_error() -> Result<(), ServerFnError> {
@@ -21,31 +16,44 @@ pub async fn cause_internal_server_error() -> Result<(), ServerFnError> {
     ))
 }
 
-#[component]
-pub fn App(cx: Scope) -> impl IntoView {
-    //let id = use_context::<String>(cx);
-    provide_meta_context(cx);
+pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
-        cx,
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <AutoReload options=options.clone() />
+                <HydrationScripts options/>
+                <MetaTags/>
+            </head>
+            <body>
+                <App/>
+            </body>
+        </html>
+    }
+}
+
+#[component]
+pub fn App() -> impl IntoView {
+    provide_meta_context();
+    view! {
         <Link rel="shortcut icon" type_="image/ico" href="/favicon.ico"/>
         <Stylesheet id="leptos" href="/pkg/errors_axum.css"/>
-        <Router fallback=|cx| {
-            let mut outside_errors = Errors::default();
-            outside_errors.insert_with_default_key(AppError::NotFound);
-            view! { cx,
-                <ErrorTemplate outside_errors/>
-            }
-            .into_view(cx)
-        }>
+        <Router>
             <header>
                 <h1>"Error Examples:"</h1>
             </header>
             <main>
-                <Routes>
-                    <Route path="" view=|cx| view! {
-                        cx,
-                        <ExampleErrors/>
-                    }/>
+                <Routes fallback=|| {
+                    let mut errors = Errors::default();
+                    errors.insert_with_default_key(AppError::NotFound);
+                    view! {
+                        <ErrorTemplate errors/>
+                    }
+                    .into_view()
+                }>
+                    <Route path=StaticSegment("") view=ExampleErrors/>
                 </Routes>
             </main>
         </Router>
@@ -53,10 +61,11 @@ pub fn App(cx: Scope) -> impl IntoView {
 }
 
 #[component]
-pub fn ExampleErrors(cx: Scope) -> impl IntoView {
-    let generate_internal_error = create_server_action::<CauseInternalServerError>(cx);
+pub fn ExampleErrors() -> impl IntoView {
+    let generate_internal_error =
+        ServerAction::<CauseInternalServerError>::new();
 
-    view! { cx,
+    view! {
         <p>
             "These links will load 404 pages since they do not exist. Verify with browser development tools: " <br/>
             <a href="/404">"This links to a page that does not exist"</a><br/>
@@ -64,23 +73,23 @@ pub fn ExampleErrors(cx: Scope) -> impl IntoView {
         </p>
         <p>
             "After pressing this button check browser network tools. Can be used even when WASM is blocked:"
-            <ActionForm action=generate_internal_error>
-                <input name="error1" type="submit" value="Generate Internal Server Error"/>
-            </ActionForm>
         </p>
+        <ActionForm action=generate_internal_error>
+            <input name="error1" type="submit" value="Generate Internal Server Error"/>
+        </ActionForm>
         <p>"The following <div> will always contain an error and cause this page to produce status 500. Check browser dev tools. "</p>
         <div>
-        // note that the error boundries could be placed above in the Router or lower down
-        // in a particular route. The generated errors on the entire page contribue to the
-        // final status code sent by the server when producing ssr pages.
-        <ErrorBoundary fallback=|cx, errors| view!{cx, <ErrorTemplate errors=errors/>}>
-            <ReturnsError/>
-        </ErrorBoundary>
+            // note that the error boundaries could be placed above in the Router or lower down
+            // in a particular route. The generated errors on the entire page contribute to the
+            // final status code sent by the server when producing ssr pages.
+            <ErrorBoundary fallback=|errors| view!{ <ErrorTemplate errors/>}>
+                <ReturnsError/>
+            </ErrorBoundary>
         </div>
     }
 }
 
 #[component]
-pub fn ReturnsError(_cx: Scope) -> impl IntoView {
+pub fn ReturnsError() -> impl IntoView {
     Err::<String, AppError>(AppError::InternalServerError)
 }

@@ -1,4 +1,0 @@
-[tasks.build]
-command = "cargo"
-args = ["+stable", "build-all-features"]
-install_crate = "cargo-all-features"

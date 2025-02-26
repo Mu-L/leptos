@@ -7,59 +7,44 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anyhow = "1.0.66"
-console_log = "0.2.0"
 console_error_panic_hook = "0.1.7"
-futures = "0.3.25"
-cfg-if = "1.0.0"
-leptos = { path = "../../../leptos/leptos", default-features = false, features = [
-	"serde",
-] }
-leptos_axum = { path = "../../../leptos/integrations/axum", default-features = false, optional = true }
-leptos_meta = { path = "../../../leptos/meta", default-features = false }
-leptos_router = { path = "../../../leptos/router", default-features = false }
-leptos_reactive = { path = "../../../leptos/leptos_reactive", default-features = false }
-log = "0.4.17"
-simple_logger = "4.0.0"
-serde = { version = "1.0.148", features = ["derive"] }
-serde_json = "1.0.89"
-gloo-net = { version = "0.2.5", features = ["http"] }
-reqwest = { version = "0.11.13", features = ["json"] }
-axum = { version = "0.6.1", optional = true }
+leptos = { path = "../../leptos" }
+leptos_axum = { path = "../../integrations/axum", optional = true }
+leptos_meta = { path = "../../meta" }
+leptos_router = { path = "../../router" }
+serde = { version = "1.0", features = ["derive"] }
+axum = { version = "0.7.5", optional = true }
 tower = { version = "0.4.13", optional = true }
-tower-http = { version = "0.3.4", features = ["fs"], optional = true }
-tokio = { version = "1.22.0", features = ["full"], optional = true }
-http = { version = "0.2.8" }
-thiserror = "1.0.38"
-tracing = "0.1.37"
-wasm-bindgen = "0.2"
+tower-http = { version = "0.5.2", features = ["fs"], optional = true }
+tokio = { version = "1.39", features = ["full"], optional = true }
+http = { version = "1.1" }
+thiserror = "1.0"
+wasm-bindgen = "0.2.93"
 
 [features]
-default = ["csr"]
-csr = ["leptos/csr", "leptos_meta/csr", "leptos_router/csr"]
-hydrate = ["leptos/hydrate", "leptos_meta/hydrate", "leptos_router/hydrate"]
+hydrate = ["leptos/hydrate"]
 ssr = [
-	"dep:axum",
-	"dep:tower",
-	"dep:tower-http",
-	"dep:tokio",
-	"leptos/ssr",
-	"leptos_meta/ssr",
-	"leptos_router/ssr",
-	"dep:leptos_axum",
+  "dep:axum",
+  "dep:tower",
+  "dep:tower-http",
+  "dep:tokio",
+  "leptos/ssr",
+  "leptos_meta/ssr",
+  "leptos_router/ssr",
+  "dep:leptos_axum",
 ]
 
 [package.metadata.cargo-all-features]
 denylist = ["axum", "tower", "tower-http", "tokio", "leptos_axum"]
-skip_feature_sets = [["csr", "ssr"], ["csr", "hydrate"], ["ssr", "hydrate"]]
+skip_feature_sets = [["ssr", "hydrate"]]
 
 [package.metadata.leptos]
-# The name used by wasm-bindgen/cargo-leptos for the JS/WASM bundle. Defaults to the crate name   
+# The name used by wasm-bindgen/cargo-leptos for the JS/WASM bundle. Defaults to the crate name
 output-name = "errors_axum"
 # The site root folder is where cargo-leptos generate all output. WARNING: all content of this folder will be erased on a rebuild. Use it in your server setup.
 site-root = "target/site"
 # The site-root relative folder where all compiled output (JS, WASM and CSS) is written
-# Defaults to pkg	
+# Defaults to pkg
 site-pkg-dir = "pkg"
 # [Optional] The source CSS file. If it ends with .sass or .scss then it will be compiled by dart-sass into CSS. The CSS is optimized by Lightning CSS before being written to <site-root>/<site-pkg>/app.css
 style-file = "./style.css"
@@ -73,7 +58,7 @@ reload-port = 3001
 end2end-cmd = "npx playwright test"
 #  The browserlist query used for optimizing the CSS.
 browserquery = "defaults"
-# Set by cargo-leptos watch when building with tha tool. Controls whether autoreload JS will be included in the head
+# Set by cargo-leptos watch when building with that tool. Controls whether autoreload JS will be included in the head
 watch = false
 # The environment Leptos will run in, usually either "DEV" or "PROD"
 env = "DEV"

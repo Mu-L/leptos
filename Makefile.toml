@@ -3,57 +3,37 @@
 #     cargo install --force cargo-make
 ############
 
-[config]
-# make tasks run at the workspace root
-default_to_workspace = false
+[env]
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 
-[tasks.ci]
-dependencies = ["check", "check-examples", "test"]
-
-[tasks.check]
-clear = true
-dependencies = ["check-all", "check-wasm"]
-
-[tasks.check-all]
-command = "cargo"
-args = ["+nightly", "check-all-features"]
-install_crate = "cargo-all-features"
-
-[tasks.check-wasm]
-clear = true
-dependencies = [{ name = "check-wasm", path = "leptos" }]
-
-[tasks.check-examples]
+[tasks.check-stable]
+workspace = false
 clear = true
 dependencies = [
-	{ name = "check", path = "examples/counter" },
-	{ name = "check", path = "examples/counter_isomorphic" },
 	{ name = "check", path = "examples/counter_without_macros" },
-	{ name = "check", path = "examples/counters" },
 	{ name = "check", path = "examples/counters_stable" },
-	{ name = "check", path = "examples/error_boundary" },
-	{ name = "check", path = "examples/errors_axum" },
-	{ name = "check", path = "examples/fetch" },
-	{ name = "check", path = "examples/hackernews" },
-	{ name = "check", path = "examples/hackernews_axum" },
-	{ name = "check", path = "examples/login_with_token_csr_only" },
-	{ name = "check", path = "examples/parent_child" },
-	{ name = "check", path = "examples/router" },
-	{ name = "check", path = "examples/session_auth_axum" },
-	{ name = "check", path = "examples/ssr_modes" },
-	{ name = "check", path = "examples/ssr_modes_axum" },
-	{ name = "check", path = "examples/tailwind" },
-	{ name = "check", path = "examples/todo_app_sqlite" },
-	{ name = "check", path = "examples/todo_app_sqlite_axum" },
-	{ name = "check", path = "examples/todo_app_sqlite_viz" },
-	{ name = "check", path = "examples/todomvc" },
 ]
 
-[tasks.test]
-clear = true
-dependencies = ["test-all"]
-
-[tasks.test-all]
+[tasks.ci-examples]
+workspace = false
+cwd = "examples"
 command = "cargo"
-args = ["+nightly", "test-all-features"]
-install_crate = "cargo-all-features"
+args = ["make", "ci-clean"]
+
+[tasks.check-examples]
+workspace = false
+cwd = "examples"
+command = "cargo"
+args = ["make", "check-clean"]
+
+[tasks.build-examples]
+workspace = false
+cwd = "examples"
+command = "cargo"
+args = ["make", "build-clean"]
+
+[tasks.clean-examples]
+workspace = false
+cwd = "examples"
+command = "cargo"
+args = ["make", "clean"]
