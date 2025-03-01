@@ -1,97 +1,126 @@
 mod api;
 use crate::api::*;
-use leptos::*;
-use leptos_router::*;
+use leptos::either::Either;
+use leptos::prelude::*;
+use leptos_router::{
+    components::{
+        Form, Outlet, ParentRoute, ProtectedRoute, Redirect, Route, Router,
+        Routes, RoutingProgress, A,
+    },
+    hooks::{use_navigate, use_params, use_query_map},
+    params::Params,
+    MatchNestedRoutes,
+};
+use leptos_router_macro::path;
+use std::time::Duration;
+use tracing::info;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct ExampleContext(i32);
 
 #[component]
-pub fn RouterExample(cx: Scope) -> impl IntoView {
-    log::debug!("rendering <RouterExample/>");
+pub fn RouterExample() -> impl IntoView {
+    info!("rendering <RouterExample/>");
 
     // contexts are passed down through the route tree
-    provide_context(cx, ExampleContext(0));
+    provide_context(ExampleContext(0));
 
-    view! { cx,
-        <Router>
+    // this signal will be ued to set whether we are allowed to access a protected route
+    let (logged_in, set_logged_in) = signal(true);
+    let (is_routing, set_is_routing) = signal(false);
+
+    view! {
+        <Router set_is_routing>
+            // shows a progress bar while async data are loading
+            <div class="routing-progress">
+                <RoutingProgress is_routing max_time=Duration::from_millis(250)/>
+            </div>
             <nav>
                 // ordinary <a> elements can be used for client-side navigation
                 // using <A> has two effects:
                 // 1) ensuring that relative routing works properly for nested routes
                 // 2) setting the `aria-current` attribute on the current link,
-                //    for a11y and styling purposes
-                <A exact=true href="/">"Contacts"</A>
-                <A href="about">"About"</A>
-                <A href="settings">"Settings"</A>
-                <A href="redirect-home">"Redirect to Home"</A>
+                // for a11y and styling purposes
+                <A href="/">"Contacts"</A>
+                <A href="/about">"About"</A>
+                <A href="/settings">"Settings"</A>
+                <A href="/redirect-home">"Redirect to Home"</A>
+                <button on:click=move |_| {
+                    set_logged_in.update(|n| *n = !*n)
+                }>{move || if logged_in.get() { "Log Out" } else { "Log In" }}</button>
             </nav>
             <main>
-                <Routes>
-                    <Route
-                        path=""
-                        view=move |cx| view! { cx,  <ContactList/> }
-                    >
-                        <Route
-                            path=":id"
-                            view=move |cx| view! { cx,  <Contact/> }
-                        />
-                        <Route
-                            path="/"
-                            view=move |_| view! { cx,  <p>"Select a contact."</p> }
-                        />
-                    </Route>
-                    <Route
-                        path="about"
-                        view=move |cx| view! { cx,  <About/> }
+                <Routes transition=true fallback=|| "This page could not be found.">
+                    // paths can be created using the path!() macro, or provided as types like
+                    // StaticSegment("about")
+                    <Route path=path!("about") view=About/>
+                    <ProtectedRoute
+                        path=path!("settings")
+                        condition=move || Some(logged_in.get())
+                        redirect_path=|| "/"
+                        view=Settings
                     />
-                    <Route
-                        path="settings"
-                        view=move |cx| view! { cx,  <Settings/> }
-                    />
-                    <Route
-                        path="redirect-home"
-                        view=move |cx| view! { cx, <Redirect path="/"/> }
-                    />
+                    <Route path=path!("redirect-home") view=|| view! { <Redirect path="/"/> }/>
+                    <ContactRoutes/>
                 </Routes>
             </main>
         </Router>
     }
 }
 
+// You can define other routes in their own component.
+// Routes implement the MatchNestedRoutes
+#[component(transparent)]
+pub fn ContactRoutes() -> impl MatchNestedRoutes + Clone {
+    view! {
+        <ParentRoute path=path!("") view=ContactList>
+            <Route path=path!("/") view=|| "Select a contact."/>
+            <Route path=path!("/:id") view=Contact/>
+        </ParentRoute>
+    }
+    .into_inner()
+}
+
 #[component]
-pub fn ContactList(cx: Scope) -> impl IntoView {
-    log::debug!("rendering <ContactList/>");
+pub fn ContactList() -> impl IntoView {
+    info!("rendering <ContactList/>");
 
     // contexts are passed down through the route tree
-    provide_context(cx, ExampleContext(42));
+    provide_context(ExampleContext(42));
 
-    on_cleanup(cx, || {
-        log!("cleaning up <ContactList/>");
+    Owner::on_cleanup(|| {
+        info!("cleaning up <ContactList/>");
     });
 
-    let location = use_location(cx);
-    let contacts =
-        create_resource(cx, move || location.search.get(), get_contacts);
+    let query = use_query_map();
+    let search = Memo::new(move |_| query.read().get("q").unwrap_or_default());
+    let contacts = AsyncDerived::new(move || {
+        leptos::logging::log!("reloading contacts");
+        get_contacts(search.get())
+    });
     let contacts = move || {
-        contacts.read(cx).map(|contacts| {
+        Suspend::new(async move {
             // this data doesn't change frequently so we can use .map().collect() instead of a keyed <For/>
-            contacts
+            contacts.await
                 .into_iter()
                 .map(|contact| {
-                    view! { cx,
-                        <li><A href=contact.id.to_string()><span>{&contact.first_name} " " {&contact.last_name}</span></A></li>
+                    view! {
+                        <li>
+                            <A href=contact.id.to_string()>
+                                <span>{contact.first_name} " " {contact.last_name}</span>
+                            </A>
+                        </li>
                     }
                 })
                 .collect::<Vec<_>>()
         })
     };
 
-    view! { cx,
+    view! {
         <div class="contact-list">
             <h1>"Contacts"</h1>
-            <Suspense fallback=move || view! { cx,  <p>"Loading contacts..."</p> }>
-                {move || view! { cx, <ul>{contacts}</ul>}}
+            <Suspense fallback=move || view! { <p>"Loading contacts..."</p> }>
+                <ul>{contacts}</ul>
             </Suspense>
             <Outlet/>
         </div>
@@ -100,113 +129,111 @@ pub fn ContactList(cx: Scope) -> impl IntoView {
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct ContactParams {
-    id: usize,
+    // Params isn't implemented for usize, only Option<usize>
+    id: Option<usize>,
 }
 
 #[component]
-pub fn Contact(cx: Scope) -> impl IntoView {
-    log::debug!("rendering <Contact/>");
+pub fn Contact() -> impl IntoView {
+    info!("rendering <Contact/>");
 
-    log::debug!(
+    info!(
         "ExampleContext should be Some(42). It is {:?}",
-        use_context::<ExampleContext>(cx)
+        use_context::<ExampleContext>()
     );
 
-    on_cleanup(cx, || {
-        log!("cleaning up <Contact/>");
+    Owner::on_cleanup(|| {
+        info!("cleaning up <Contact/>");
     });
 
-    let params = use_params::<ContactParams>(cx);
-    let contact = create_resource(
-        cx,
-        move || params().map(|params| params.id).ok(),
-        // any of the following would work (they're identical)
-        // move |id| async move { get_contact(id).await }
-        // move |id| get_contact(id),
-        // get_contact
-        get_contact,
-    );
+    let params = use_params::<ContactParams>();
 
-    let contact_display = move || match contact.read(cx) {
-        // None => loading, but will be caught by Suspense fallback
-        // I'm only doing this explicitly for the example
-        None => None,
-        // Some(None) => has loaded and found no contact
-        Some(None) => Some(
-            view! { cx, <p>"No contact with this ID was found."</p> }
-                .into_any(),
-        ),
-        // Some(Some) => has loaded and found a contact
-        Some(Some(contact)) => Some(
-            view! { cx,
-                <section class="card">
-                    <h1>{contact.first_name} " " {contact.last_name}</h1>
-                    <p>{contact.address_1}<br/>{contact.address_2}</p>
-                </section>
+    let contact = AsyncDerived::new(move || {
+        get_contact(
+            params
+                .get()
+                .map(|params| params.id.unwrap_or_default())
+                .ok(),
+        )
+    });
+
+    let contact_display = move || {
+        Suspend::new(async move {
+            match contact.await {
+                None => Either::Left(
+                    view! { <p>"No contact with this ID was found."</p> },
+                ),
+                Some(contact) => Either::Right(view! {
+                    <section class="card">
+                        <h1>{contact.first_name} " " {contact.last_name}</h1>
+                        <p>{contact.address_1} <br/> {contact.address_2}</p>
+                    </section>
+                }),
             }
-            .into_any(),
-        ),
+        })
     };
 
-    view! { cx,
+    view! {
         <div class="contact">
-            <Transition fallback=move || view! { cx,  <p>"Loading..."</p> }>
-                {contact_display}
-            </Transition>
+            <Transition fallback=move || {
+                view! { <p>"Loading..."</p> }
+            }>{contact_display}</Transition>
         </div>
     }
 }
 
 #[component]
-pub fn About(cx: Scope) -> impl IntoView {
-    log::debug!("rendering <About/>");
+pub fn About() -> impl IntoView {
+    info!("rendering <About/>");
 
-    on_cleanup(cx, || {
-        log!("cleaning up <About/>");
+    Owner::on_cleanup(|| {
+        info!("cleaning up <About/>");
     });
 
-    log::debug!(
+    info!(
         "ExampleContext should be Some(0). It is {:?}",
-        use_context::<ExampleContext>(cx)
+        use_context::<ExampleContext>()
     );
 
     // use_navigate allows you to navigate programmatically by calling a function
-    let navigate = use_navigate(cx);
+    let navigate = use_navigate();
 
-    view! { cx,
-        <>
-            // note: this is just an illustration of how to use `use_navigate`
-            // <button on:click> to navigate is an *anti-pattern*
-            // you should ordinarily use a link instead,
-            // both semantically and so your link will work before WASM loads
-            <button on:click=move |_| { _ = navigate("/", Default::default()); }>
-                "Home"
-            </button>
-            <h1>"About"</h1>
-            <p>"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."</p>
-        </>
+    // note: this is just an illustration of how to use `use_navigate`
+    // <button on:click> to navigate is an *anti-pattern*
+    // you should ordinarily use a link instead,
+    // both semantically and so your link will work before WASM loads
+    view! {
+        <button on:click=move |_| navigate("/", Default::default())>"Home"</button>
+        <h1>"About"</h1>
+        <p>
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+        </p>
     }
 }
 
 #[component]
-pub fn Settings(cx: Scope) -> impl IntoView {
-    log::debug!("rendering <Settings/>");
+pub fn Settings() -> impl IntoView {
+    info!("rendering <Settings/>");
 
-    on_cleanup(cx, || {
-        log!("cleaning up <Settings/>");
+    Owner::on_cleanup(|| {
+        info!("cleaning up <Settings/>");
     });
 
-    view! { cx,
-        <>
-            <h1>"Settings"</h1>
-            <form>
-                <fieldset>
-                    <legend>"Name"</legend>
-                    <input type="text" name="first_name" placeholder="First"/>
-                    <input type="text" name="last_name" placeholder="Last"/>
-                </fieldset>
-                <pre>"This page is just a placeholder."</pre>
-            </form>
-        </>
+    view! {
+        <h1>"Settings"</h1>
+        <Form action="">
+            <fieldset>
+                <legend>"Name"</legend>
+                <input type="text" name="first_name" placeholder="First"/>
+                <input type="text" name="last_name" placeholder="Last"/>
+            </fieldset>
+            <input type="submit"/>
+            <p>
+                "This uses the " <code>"<Form/>"</code>
+                " component, which enhances forms by using client-side navigation for "
+                <code>"GET"</code> " requests, and client-side requests for " <code>"POST"</code>
+                " requests, without requiring a full page reload."
+            </p>
+        </Form>
     }
 }

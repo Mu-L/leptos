@@ -2,4 +2,10 @@
 
 This example is the same like the `counter` but it's written without using macros and can be build with stable Rust.
 
-To run it, just issue the `trunk serve --open` command in the example root. This will build the app, run it, and open a new browser to serve it.
+## Getting Started
+
+See the [Examples README](../README.md) for setup and run instructions.
+
+## Quick Start
+
+Run `trunk serve --open` to run this example.

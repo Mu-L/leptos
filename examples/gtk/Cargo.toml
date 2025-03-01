@@ -1,8 +1,0 @@
-[package]
-name = "gtk"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-leptos = { path = "../../leptos" }
-gtk = { version = "0.5.0", package = "gtk4" }

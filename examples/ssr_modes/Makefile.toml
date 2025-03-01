@@ -1,9 +1,8 @@
-[tasks.build]
-command = "cargo"
-args = ["+nightly", "build-all-features"]
-install_crate = "cargo-all-features"
+extend = [
+    { path = "../cargo-make/main.toml" },
+    { path = "../cargo-make/cargo-leptos.toml" },
+]
 
-[tasks.check]
-command = "cargo"
-args = ["+nightly", "check-all-features"]
-install_crate = "cargo-all-features"
+[env]
+
+CLIENT_PROCESS_NAME = "ssr_modes"
